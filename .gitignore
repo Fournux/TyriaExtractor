@@ -1,0 +1,10 @@
+/target
+/data
+/items
+/skills
+/quests
+Gw.dat
+
+# Python bytecode
+__pycache__/
+*.py[cod]

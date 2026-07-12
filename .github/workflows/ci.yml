@@ -1,0 +1,64 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-x64:
+    name: Windows x64 extractor
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build extractor
+        run: cargo build --package tyria-extractor-rs --target x86_64-pc-windows-msvc --locked
+
+      - name: Run Clippy
+        run: cargo clippy --package tyria-extractor-rs --all-targets --all-features --target x86_64-pc-windows-msvc --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --package tyria-extractor-rs --all-targets --target x86_64-pc-windows-msvc --locked
+
+  windows-i686:
+    name: Windows x86 (32-bit) injector and sniffer
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install 32-bit Rust target
+        run: rustup target add i686-pc-windows-msvc
+
+      - name: Build injector and sniffer
+        run: cargo build --package tyria_injector --package tyria_sniffer --target i686-pc-windows-msvc --locked
+
+      - name: Run Clippy
+        run: cargo clippy --package tyria_injector --package tyria_sniffer --all-targets --all-features --target i686-pc-windows-msvc --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --package tyria_injector --package tyria_sniffer --all-targets --target i686-pc-windows-msvc --locked
