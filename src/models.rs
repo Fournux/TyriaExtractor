@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -24,7 +23,7 @@ pub(crate) struct MftHeader {
     pub(crate) unknown_5: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct MftEntry {
     pub(crate) index: u32,
     pub(crate) offset: u64,
@@ -44,9 +43,9 @@ pub(crate) struct HashLookupEntry {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DatCacheManifest {
-    pub(crate) generated_at: DateTime<Utc>,
-    pub(crate) gw_dat_path: PathBuf,
+    pub(crate) schema_version: u32,
     pub(crate) gw_dat_cache_key: String,
+    #[serde(skip)]
     pub(crate) cache_root: PathBuf,
     pub(crate) header: GwDatHeader,
     pub(crate) mft: MftHeader,
@@ -54,7 +53,14 @@ pub(crate) struct DatCacheManifest {
     pub(crate) dumped_entries: usize,
     pub(crate) decompressed_entries: usize,
     pub(crate) failed_entries: usize,
+    pub(crate) failures: Vec<DatCacheFailure>,
     pub(crate) entries: Vec<DatCacheEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DatCacheFailure {
+    pub(crate) index: u32,
+    pub(crate) error: String,
 }
 
 #[derive(Debug, Serialize)]

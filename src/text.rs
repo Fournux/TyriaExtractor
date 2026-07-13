@@ -1,3 +1,9 @@
+pub(crate) mod catalog;
+
+#[cfg(test)]
+#[path = "text/tests.rs"]
+mod extraction_tests;
+
 pub(crate) fn decompress_and_decode_entry_records(data: &[u8]) -> Vec<u8> {
     // Check if the data starts with a plausible record header:
     if data.len() < 6 {

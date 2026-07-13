@@ -1,4 +1,5 @@
 use super::*;
+use crate::text_records;
 
 #[test]
 fn utf16le_strings_extracts_offsets_and_ignores_short_noise() {

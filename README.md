@@ -39,17 +39,22 @@ After the official client has logged in and loaded a map, inject the DLL:
 .\target\i686-pc-windows-msvc\release\tyria_injector.exe Gw.exe .\target\i686-pc-windows-msvc\release\tyria_sniffer.dll
 ```
 
-The sniffer appends item observations to `tyria_items.jsonl` beside the DLL.
-Use a local `Gw.dat` or `Gw.snapshot` to generate the databases:
+The sniffer appends item observations to `tyria_items.jsonl` and quest evidence
+to `tyria_quests.jsonl` beside the DLL. Use a local `Gw.dat` or `Gw.snapshot` to
+generate databases:
 
 ```powershell
 cargo run --release -- extract skills --snapshot "C:\path\to\Gw.dat"
 cargo run --release -- extract items --snapshot "C:\path\to\Gw.dat" --packet-log ".\target\i686-pc-windows-msvc\release\tyria_items.jsonl"
+cargo run --release -- extract quests --snapshot "C:\path\to\Gw.dat" --packet-log ".\target\i686-pc-windows-msvc\release\tyria_quests.jsonl" --item-log ".\target\i686-pc-windows-msvc\release\tyria_items.jsonl"
 ```
 
-Generated files remain local under the Git-ignored `skills/` and `items/`
-directories. Item coverage depends on which definitions the official client
-received while the sniffer was active.
+`--out-dir <PATH>` selects the root receiving `skills/`, `items/`, and
+`quests/`; it defaults to the current directory. Capture-backed extraction
+rejects missing health metadata, packet loss, write failures, and incompatible
+quest schemas. `--allow-unverified-capture` is an explicit legacy-log escape
+hatch, and `capture.json` records whether accepted evidence was verified.
+Generated output directories remain local and Git-ignored.
 
 ## Extraction status
 
@@ -61,13 +66,18 @@ received while the sniffer was active.
 | Skill icons | ✅ | Standard- and high-resolution PNG icons |
 | Items | 🚧 | Extraction works for observed `ItemGeneral` records; exhaustive runtime coverage is not yet proven |
 | Item icons | 🚧 | Inventory icons are resolved for captured `model_file_id` values |
-| Quests | 🚧 | — |
+| Quests | 🚧 | Deterministic catalog of observed quest IDs, localized fields, objective variants, rewards, and NPC role/map evidence |
 | Monsters / creatures | ⬜ | — |
 | NPCs | ⬜ | — |
 
 Items remain in progress because the decoding and export pipeline works, but the
 official client must still receive every relevant runtime item definition before
 the catalog can be considered exhaustive.
+
+Quests remain in progress because no complete static quest table has been
+confirmed. The consumer preserves relations observed in official-client packet
+captures, but exhaustive quest, branch, dialogue, and prerequisite coverage is
+not yet proven.
 
 ## Data flow
 
@@ -79,18 +89,20 @@ Gw.dat / Gw.snapshot
 
 official client + injected sniffer
   -> ItemGeneral runtime pairs and item EncStrings
+  -> quest packets, schemas, dialogue/NPC relations, and capture health
   -> local Gw.dat text and image resolution
-  -> items/items.json and inventory icons
+  -> items/items.json, quests/quests.json, capture manifests, and inventory icons
 ```
 
 The DAT remains the source of names, descriptions, and assets. Runtime capture
 provides joins that are not available as a confirmed complete static table,
 most notably `model_id -> model_file_id`.
 
-The injected DLL writes `tyria_items.jsonl` by default: a minimal stream of
-deduplicated item observations. A real 322-record example is kept in
+The injected DLL writes `tyria_items.jsonl` and `tyria_quests.jsonl` by default:
+minimal, session-scoped evidence streams with health counters. A real 322-record
+item example is kept in
 [`examples/tyria_items.jsonl`](examples/tyria_items.jsonl). Setting
-`TYRIA_VERBOSE_JSONL` enables the broader diagnostic stream and writes
+`TYRIA_VERBOSE_JSONL` enables the broader diagnostic item stream and writes
 `tyria_packets.jsonl`; it is not the normal minimal mode.
 
 ## Documentation
@@ -113,8 +125,8 @@ small capture examples and test fixtures used to document and validate decoder
 behavior. `Gw.dat`, `Gw.snapshot`, client executables, complete extracted
 catalogs, and extracted icon collections must remain local and must not be
 committed or redistributed with the project. Users must provide their own
-official local client files; generated `items/` and `skills/` outputs are
-ignored by Git.
+official local client files; generated `items/`, `quests/`, and `skills/`
+outputs are ignored by Git.
 
 The MIT License applies only to original TyriaExtractor software and project
 material. It does not grant rights to Guild Wars data or assets extracted with

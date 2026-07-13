@@ -1,5 +1,4 @@
 use anyhow::{Context, bail};
-use chrono::Utc;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -15,6 +14,85 @@ use crate::{
 };
 
 const CLIENT_PE_FILE_ID: u32 = 4102;
+
+pub(crate) struct DatArchive {
+    path: PathBuf,
+    file: File,
+    file_size: u64,
+    entries: Vec<MftEntry>,
+    hash_lookup: Vec<HashLookupEntry>,
+    hash_to_mft: BTreeMap<u32, u32>,
+    hashes_by_mft: BTreeMap<u32, Vec<u32>>,
+}
+
+impl DatArchive {
+    pub(crate) fn open(path: &Path) -> anyhow::Result<Self> {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("reading metadata for {}", path.display()))?;
+        let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let (_, _, entries) = read_dat_table(&mut file, path, metadata.len())?;
+        let hash_lookup = read_hash_lookup(&mut file, metadata.len(), &entries)?;
+        let hash_to_mft = hash_lookup_by_file_id(&hash_lookup);
+        let hashes_by_mft = hash_lookup_by_mft_index(&hash_lookup);
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            file_size: metadata.len(),
+            entries,
+            hash_lookup,
+            hash_to_mft,
+            hashes_by_mft,
+        })
+    }
+
+    pub(crate) fn entries(&self) -> &[MftEntry] {
+        &self.entries
+    }
+
+    pub(crate) fn hash_lookup(&self) -> &[HashLookupEntry] {
+        &self.hash_lookup
+    }
+
+    pub(crate) fn hashes_by_mft(&self) -> &BTreeMap<u32, Vec<u32>> {
+        &self.hashes_by_mft
+    }
+
+    pub(crate) fn entry(&self, index: u32) -> Option<MftEntry> {
+        mft_entry_by_index(&self.entries, index).copied()
+    }
+
+    pub(crate) fn mft_index_for_file_id(&self, file_id: u32) -> Option<u32> {
+        lookup_mft_index_for_file_id(file_id, &self.hash_to_mft)
+    }
+
+    pub(crate) fn entry_for_file_id(&self, file_id: u32) -> Option<MftEntry> {
+        lookup_mft_entry_for_file_id(file_id, &self.hash_to_mft, &self.entries).copied()
+    }
+
+    pub(crate) fn read_entry(&mut self, index: u32) -> anyhow::Result<Vec<u8>> {
+        let entry = self
+            .entry(index)
+            .with_context(|| format!("MFT entry {index} not found"))?;
+        read_dat_entry_from_file(&mut self.file, self.file_size, &entry)
+    }
+
+    pub(crate) fn read_file_id(&mut self, file_id: u32) -> anyhow::Result<Option<Vec<u8>>> {
+        let Some(entry) = self.entry_for_file_id(file_id) else {
+            return Ok(None);
+        };
+        read_dat_entry_from_file(&mut self.file, self.file_size, &entry).map(Some)
+    }
+
+    pub(crate) fn client_pe_data(&mut self) -> anyhow::Result<Vec<u8>> {
+        read_client_pe_data(
+            &self.path,
+            &mut self.file,
+            self.file_size,
+            &self.hash_to_mft,
+            &self.entries,
+        )
+    }
+}
 
 pub(crate) fn dump_entries(
     path: &Path,
@@ -32,6 +110,7 @@ pub(crate) fn dump_entries(
     let entries_root = cache_root.join("entries");
 
     let mut cache_entries = Vec::new();
+    let mut failures = Vec::new();
     let mut active_entries = 0;
     let mut dumped_entries = 0;
     let mut decompressed_entries = 0;
@@ -80,15 +159,18 @@ pub(crate) fn dump_entries(
                     relative_path,
                 });
             }
-            Err(_) => {
+            Err(error) => {
                 failed_entries += 1;
+                failures.push(DatCacheFailure {
+                    index: entry.index,
+                    error: format!("{error:#}"),
+                });
             }
         }
     }
 
     Ok(DatCacheManifest {
-        generated_at: Utc::now(),
-        gw_dat_path: path.to_path_buf(),
+        schema_version: 1,
         gw_dat_cache_key: cache_key,
         cache_root,
         header,
@@ -97,6 +179,7 @@ pub(crate) fn dump_entries(
         dumped_entries,
         decompressed_entries,
         failed_entries,
+        failures,
         entries: cache_entries,
     })
 }

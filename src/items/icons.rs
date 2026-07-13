@@ -1,18 +1,10 @@
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
-use std::{
-    collections::BTreeSet,
-    fs::{self, File},
-    path::Path,
-};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use crate::{
-    dat::{
-        hash_lookup_by_file_id, hash_lookup_by_mft_index, lookup_mft_index_for_file_id,
-        lookup_mft_stream_entry_from_base, mft_entry_by_index, read_dat_entry_from_file,
-        read_dat_table, read_hash_lookup,
-    },
+    dat::{DatArchive, lookup_mft_stream_entry_from_base},
     icon_payload::decode_icon_payload,
+    io_util::write_json,
 };
 
 fn relative_entry_path(mft_entry_index: u32) -> String {
@@ -156,15 +148,9 @@ pub(crate) fn export_model_file_icons(
         bail!("start_id ({start_id}) must be <= max_id ({max_id})");
     }
 
-    let metadata = fs::metadata(gw_dat_path)
-        .with_context(|| format!("reading metadata for {}", gw_dat_path.display()))?;
-    let mut file =
-        File::open(gw_dat_path).with_context(|| format!("opening {}", gw_dat_path.display()))?;
-    let (_, _, mft_entries) = read_dat_table(&mut file, gw_dat_path, metadata.len())?;
-    let hash_lookup = read_hash_lookup(&mut file, metadata.len(), &mft_entries)?;
-    let hashes_by_mft = hash_lookup_by_mft_index(&hash_lookup);
-    let hash_to_mft = hash_lookup_by_file_id(&hash_lookup);
-    let model_file_ids = hash_lookup
+    let mut archive = DatArchive::open(gw_dat_path)?;
+    let model_file_ids = archive
+        .hash_lookup()
         .iter()
         .map(|entry| entry.file_number)
         .filter(|file_id| *file_id >= start_id && max_id.is_none_or(|max_id| *file_id <= max_id))
@@ -176,9 +162,8 @@ pub(crate) fn export_model_file_icons(
     };
 
     println!(
-        "Exporting model-file stream-1 icons from {} to {} for hash aliases in {}",
+        "Exporting model-file stream-1 icons from {} for hash aliases in {}",
         gw_dat_path.display(),
-        out_dir.display(),
         range_label
     );
     if include_direct {
@@ -200,21 +185,22 @@ pub(crate) fn export_model_file_icons(
 
     for model_file_id in model_file_ids {
         scanned_model_file_ids += 1;
-        let Some(base_mft_index) = lookup_mft_index_for_file_id(model_file_id, &hash_to_mft) else {
+        let Some(base_mft_index) = archive.mft_index_for_file_id(model_file_id) else {
             continue;
         };
-        let Some(base_entry) = mft_entry_by_index(&mft_entries, base_mft_index) else {
+        let Some(base_entry) = archive.entry(base_mft_index) else {
             missing_mft_entries += 1;
             continue;
         };
 
-        let base_hashes = hashes_by_mft
+        let base_hashes = archive
+            .hashes_by_mft()
             .get(&base_entry.index)
-            .map(Vec::as_slice)
+            .cloned()
             .unwrap_or_default();
 
         let Some(candidate) =
-            model_file_icon_candidate_for_base(base_entry, include_direct, &mft_entries)
+            model_file_icon_candidate_for_base(&base_entry, include_direct, archive.entries())
         else {
             skipped_without_stream1 += 1;
             continue;
@@ -226,13 +212,15 @@ pub(crate) fn export_model_file_icons(
         }
         let source = candidate.source;
         let stream_id = candidate.stream_id;
-        let image_entry = candidate.image_entry;
+        let image_entry = *candidate.image_entry;
 
-        let image_hashes = hashes_by_mft
+        let image_hashes = archive
+            .hashes_by_mft()
             .get(&image_entry.index)
-            .map(Vec::as_slice)
+            .cloned()
             .unwrap_or_default();
-        let result = read_dat_entry_from_file(&mut file, metadata.len(), image_entry)
+        let result = archive
+            .read_entry(image_entry.index)
             .with_context(|| format!("reading {source} MFT entry {}", image_entry.index))
             .and_then(|bytes| {
                 export_model_file_icon_payload(
@@ -240,10 +228,10 @@ pub(crate) fn export_model_file_icons(
                         model_file_id,
                         source,
                         stream_id,
-                        base_entry,
-                        image_entry,
-                        base_hashes,
-                        image_hashes,
+                        base_entry: &base_entry,
+                        image_entry: &image_entry,
+                        base_hashes: &base_hashes,
+                        image_hashes: &image_hashes,
                         out_dir,
                     },
                     &bytes,
@@ -260,16 +248,14 @@ pub(crate) fn export_model_file_icons(
             }
             Err(err) => {
                 failed_payloads += 1;
-                if failed_payloads <= 20 {
-                    manifest_entries.push(serde_json::json!({
-                        "model_file_id": model_file_id,
-                        "source": source,
-                        "stream_id": stream_id,
-                        "base_mft_entry_index": base_entry.index,
-                        "image_mft_entry_index": image_entry.index,
-                        "error": format!("{err:#}"),
-                    }));
-                }
+                manifest_entries.push(serde_json::json!({
+                    "model_file_id": model_file_id,
+                    "source": source,
+                    "stream_id": stream_id,
+                    "base_mft_entry_index": base_entry.index,
+                    "image_mft_entry_index": image_entry.index,
+                    "error": format!("{err:#}"),
+                }));
             }
         }
 
@@ -279,8 +265,7 @@ pub(crate) fn export_model_file_icons(
     }
 
     let manifest = serde_json::json!({
-        "generated_at": Utc::now().to_rfc3339(),
-        "source": gw_dat_path,
+        "schema_version": 1,
         "note": "Model-file icon export keyed by DAT hash aliases. By default this decodes only linked stream 1, matching GWToolbox++ item UI icon loading and avoiding direct skill-icon texture references. Use include_direct only for diagnostic standalone ATEX/ATTX/DDS/inline-FFNA payloads; that mode is mixed and can include skill/UI textures. PNG filenames are <model_file_id>.png.",
         "start_id": start_id,
         "max_id": max_id,
@@ -299,15 +284,10 @@ pub(crate) fn export_model_file_icons(
         },
         "entries": manifest_entries,
     });
-    let out_file = File::create(out_dir.join("manifest.json"))?;
-    serde_json::to_writer_pretty(out_file, &manifest)?;
+    write_json(&out_dir.join("manifest.json"), &manifest)?;
     println!(
-        "Exported {} model-file icons to {} (skipped without stream 1: {}, unsupported: {}, failures: {})",
-        exported_icons,
-        out_dir.display(),
-        skipped_without_stream1,
-        unsupported_payloads,
-        failed_payloads
+        "Exported {} model-file icons (skipped without stream 1: {}, unsupported: {}, failures: {})",
+        exported_icons, skipped_without_stream1, unsupported_payloads, failed_payloads
     );
     Ok(())
 }

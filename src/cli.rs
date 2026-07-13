@@ -1,25 +1,15 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-
-const DEFAULT_GW_SNAPSHOT: &str =
-    "/home/fournux/.local/share/Steam/steamapps/common/Guild Wars/Gw.snapshot";
 
 #[derive(Debug, Parser)]
 #[command(name = "gwdb-extractor")]
 #[command(about = "Guild Wars client extraction helpers")]
 pub(crate) struct Cli {
-    #[arg(long, value_enum)]
-    pub(crate) extract: Option<ExtractTarget>,
-    #[arg(long, default_value = DEFAULT_GW_SNAPSHOT)]
-    pub(crate) snapshot: PathBuf,
+    /// Root directory receiving skills/, items/, and quests/.
+    #[arg(long, global = true, default_value = ".")]
+    pub(crate) out_dir: PathBuf,
     #[command(subcommand)]
-    pub(crate) command: Option<Command>,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub(crate) enum ExtractTarget {
-    Skills,
-    Items,
+    pub(crate) command: Command,
 }
 
 #[derive(Debug, Subcommand)]
@@ -49,26 +39,32 @@ pub(crate) enum Command {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ExtractCommand {
     Skills {
-        #[arg(long, default_value = DEFAULT_GW_SNAPSHOT)]
+        #[arg(long)]
         snapshot: PathBuf,
     },
     Items {
-        #[arg(long, default_value = DEFAULT_GW_SNAPSHOT)]
+        #[arg(long)]
         snapshot: PathBuf,
         #[arg(long)]
         packet_log: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, requires = "packet_log")]
         skip_icons: bool,
-        #[arg(long)]
+        #[arg(long, requires = "packet_log")]
         use_client_strings: bool,
+        /// Accept legacy captures without verified health metadata.
+        #[arg(long, requires = "packet_log")]
+        allow_unverified_capture: bool,
     },
     Quests {
-        #[arg(long, default_value = DEFAULT_GW_SNAPSHOT)]
+        #[arg(long)]
         snapshot: PathBuf,
         #[arg(long)]
         packet_log: PathBuf,
         /// Compact ItemGeneral capture used to resolve reward item model IDs.
         #[arg(long)]
         item_log: Option<PathBuf>,
+        /// Accept legacy captures without verified health/schema metadata.
+        #[arg(long)]
+        allow_unverified_capture: bool,
     },
 }

@@ -1,30 +1,23 @@
 use super::{
     ExtractedSkill, OutputCampaignStats, OutputCounts, OutputManifest, SKILL_FLAG_NOT_PLAYABLE,
-    SKILL_FLAG_PVE, SKILL_FLAG_PVP, SkillCosts, SkillFlags, SkillTiming, campaign_name,
-    decoded_energy_cost,
+    SKILL_FLAG_PVE, SKILL_FLAG_PVP, SKILL_OUTPUT_SCHEMA_VERSION, SkillCosts, SkillFlags,
+    SkillTiming, campaign_name, decoded_energy_cost,
     icons::export_skill_icon,
     profession_name, skill_type_name,
     table::{SKILL_RECORD_SIZE, locate_skill_table},
+    validate_skill_distribution,
 };
 
-use anyhow::Context;
-use chrono::Utc;
+use anyhow::{Context, bail};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs,
     path::Path,
 };
 
 use crate::{
-    dat::{
-        hash_lookup_by_file_id, lookup_mft_index_for_file_id, mft_entry_by_index,
-        read_client_pe_data, read_dat_entry_from_file, read_dat_table, read_hash_lookup,
-    },
-    pe::PeImage,
-    text_records::{
-        self, CLIENT_LANGUAGE_CODES, CLIENT_TEXT_FILE_ID_TABLE_VA, CLIENT_TEXT_FILES_PER_LANGUAGE,
-        TEXT_RECORDS_PER_FILE,
-    },
+    dat::DatArchive, io_util::write_json, pe::PeImage, text::catalog::LocalizedTextReader,
+    text_records::TEXT_RECORDS_PER_FILE,
 };
 
 fn clean_text(text: &str) -> String {
@@ -77,21 +70,8 @@ fn extract_skills_with_icon_dirs(
     images_dir: &Path,
     images_hd_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let metadata =
-        fs::metadata(gw_dat_path).with_context(|| format!("reading {}", gw_dat_path.display()))?;
-    let mut file =
-        File::open(gw_dat_path).with_context(|| format!("opening {}", gw_dat_path.display()))?;
-    let (_, _, mft_entries) = read_dat_table(&mut file, gw_dat_path, metadata.len())?;
-    let hash_lookup = read_hash_lookup(&mut file, metadata.len(), &mft_entries)?;
-
-    let hash_to_mft = hash_lookup_by_file_id(&hash_lookup);
-    let pe_data = read_client_pe_data(
-        gw_dat_path,
-        &mut file,
-        metadata.len(),
-        &hash_to_mft,
-        &mft_entries,
-    )?;
+    let mut archive = DatArchive::open(gw_dat_path)?;
+    let pe_data = archive.client_pe_data()?;
     let pe = PeImage::parse(&pe_data)?;
 
     // Extract skill metadata records from the PE skill table
@@ -108,71 +88,15 @@ fn extract_skills_with_icon_dirs(
         .get(skill_table_offset..skill_table_end)
         .context("skill table exceeds PE data")?;
 
-    // Extract all available client language arrays. English is still used as the
-    // canonical row-selection language; output strings are emitted as language maps.
-    let file_ids = pe.language_file_ids(
+    let compact_seeds = BTreeMap::new();
+    let decoded_records = BTreeMap::new();
+    let mut text_reader = LocalizedTextReader::new(
+        &mut archive,
         &pe_data,
-        CLIENT_TEXT_FILE_ID_TABLE_VA,
-        CLIENT_TEXT_FILES_PER_LANGUAGE,
-        0,
+        &pe,
+        &compact_seeds,
+        &decoded_records,
     )?;
-    let localized_file_ids = CLIENT_LANGUAGE_CODES
-        .iter()
-        .map(|(language_index, code)| {
-            pe.language_file_ids(
-                &pe_data,
-                CLIENT_TEXT_FILE_ID_TABLE_VA,
-                CLIENT_TEXT_FILES_PER_LANGUAGE,
-                *language_index,
-            )
-            .map(|ids| (*code, ids))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    // Cache to hold decompressed text file records
-    let mut decompressed_cache = BTreeMap::<u32, BTreeMap<u32, String>>::new();
-    fs::create_dir_all(images_dir).with_context(|| format!("creating {}", images_dir.display()))?;
-    if let Some(images_hd_dir) = images_hd_dir {
-        fs::create_dir_all(images_hd_dir)
-            .with_context(|| format!("creating {}", images_hd_dir.display()))?;
-    }
-
-    // Helper to retrieve and decompress a record
-    let mut get_text_record = |file: &mut File,
-                               file_ids: &[Option<u32>],
-                               file_index: usize,
-                               record_index: u32|
-     -> anyhow::Result<Option<String>> {
-        let Some(file_id) = file_ids.get(file_index).and_then(|file_id| *file_id) else {
-            return Ok(None);
-        };
-        if let std::collections::btree_map::Entry::Vacant(entry) = decompressed_cache.entry(file_id)
-        {
-            let Some(mft_index) = lookup_mft_index_for_file_id(file_id, &hash_to_mft) else {
-                return Ok(None);
-            };
-            let Some(mft_entry) = mft_entry_by_index(&mft_entries, mft_index) else {
-                return Ok(None);
-            };
-            let entry_bytes = read_dat_entry_from_file(file, metadata.len(), mft_entry)
-                .with_context(|| {
-                    format!(
-                        "reading text file {file_id} from MFT entry {}",
-                        mft_entry.index
-                    )
-                })?;
-            let records = text_records::parse_text_record_map(&entry_bytes)
-                .with_context(|| format!("parsing text records from file {file_id}"))?
-                .into_iter()
-                .map(|(record_index, text)| (record_index, clean_text(&text)))
-                .collect();
-            entry.insert(records);
-        }
-        Ok(decompressed_cache
-            .get(&file_id)
-            .and_then(|records| records.get(&record_index))
-            .cloned())
-    };
 
     let mut selected_indices = BTreeSet::new();
     let mut base_names = BTreeSet::new();
@@ -223,12 +147,11 @@ fn extract_skills_with_icon_dirs(
 
         if is_equippable {
             selected_indices.insert(i);
-            if let Some(name) = get_text_record(
-                &mut file,
-                &file_ids,
-                (name_string_id / TEXT_RECORDS_PER_FILE) as usize,
-                name_string_id % TEXT_RECORDS_PER_FILE,
-            )? {
+            if let Some(name) = text_reader
+                .text(name_string_id)?
+                .get("en")
+                .map(|text| clean_text(text))
+            {
                 base_names.insert(name);
             }
         }
@@ -266,7 +189,6 @@ fn extract_skills_with_icon_dirs(
         let skill_equip_type_code = row_bytes[0x33];
 
         let name_file_index = (name_string_id / TEXT_RECORDS_PER_FILE) as usize;
-        let name_record_index = name_string_id % TEXT_RECORDS_PER_FILE;
 
         if campaign == "nightfall"
             && !pvp
@@ -274,8 +196,10 @@ fn extract_skills_with_icon_dirs(
             && (1..=10).contains(&profession_code)
             && skill_equip_type_code == 2
             && name_file_index == 26
-            && let Some(name) =
-                get_text_record(&mut file, &file_ids, name_file_index, name_record_index)?
+            && let Some(name) = text_reader
+                .text(name_string_id)?
+                .get("en")
+                .map(|text| clean_text(text))
             && name != "REMOVE"
             && !base_names.contains(&name)
         {
@@ -284,6 +208,7 @@ fn extract_skills_with_icon_dirs(
     }
 
     let mut extracted_skills = Vec::new();
+    let mut icon_jobs = Vec::new();
 
     for index in selected_indices {
         let row_bytes =
@@ -301,31 +226,22 @@ fn extract_skills_with_icon_dirs(
             row_bytes[0xA3],
         ]);
 
-        let name_file_index = (name_string_id / TEXT_RECORDS_PER_FILE) as usize;
-        let name_record_index = name_string_id % TEXT_RECORDS_PER_FILE;
-        let desc_file_index = (description_string_id / TEXT_RECORDS_PER_FILE) as usize;
-        let desc_record_index = description_string_id % TEXT_RECORDS_PER_FILE;
-
-        let mut name = BTreeMap::new();
-        let mut description = BTreeMap::new();
-        for (code, language_file_ids) in &localized_file_ids {
-            if let Some(text) = get_text_record(
-                &mut file,
-                language_file_ids,
-                name_file_index,
-                name_record_index,
-            )? {
-                name.insert((*code).to_string(), text);
-            }
-            if let Some(text) = get_text_record(
-                &mut file,
-                language_file_ids,
-                desc_file_index,
-                desc_record_index,
-            )? {
-                description.insert((*code).to_string(), text);
-            }
-        }
+        let name = text_reader
+            .text(name_string_id)?
+            .into_iter()
+            .filter_map(|(code, text)| {
+                let text = clean_text(&text);
+                (!text.is_empty()).then_some((code, text))
+            })
+            .collect();
+        let description = text_reader
+            .text(description_string_id)?
+            .into_iter()
+            .filter_map(|(code, text)| {
+                let text = clean_text(&text);
+                (!text.is_empty()).then_some((code, text))
+            })
+            .collect();
 
         let icon_texture_hash = u32::from_le_bytes([
             row_bytes[0x8C],
@@ -379,26 +295,7 @@ fn extract_skills_with_icon_dirs(
             row_bytes[0x93],
         ]);
 
-        export_skill_icon(
-            &mut file,
-            metadata.len(),
-            icon_texture_hash,
-            &hash_to_mft,
-            &mft_entries,
-            &images_dir.join(format!("{index}.png")),
-        );
-        if icon_hd_texture_hash != 0
-            && let Some(images_hd_dir) = images_hd_dir
-        {
-            export_skill_icon(
-                &mut file,
-                metadata.len(),
-                icon_hd_texture_hash,
-                &hash_to_mft,
-                &mft_entries,
-                &images_hd_dir.join(format!("{index}.png")),
-            );
-        }
+        icon_jobs.push((index, icon_texture_hash, icon_hd_texture_hash));
 
         extracted_skills.push(ExtractedSkill {
             id: index as u32,
@@ -506,17 +403,42 @@ fn extract_skills_with_icon_dirs(
             },
         );
     }
+    validate_skill_distribution(&campaigns_stats, extracted_skills.len())?;
+
+    drop(text_reader);
+    fs::create_dir_all(images_dir).with_context(|| format!("creating {}", images_dir.display()))?;
+    if let Some(images_hd_dir) = images_hd_dir {
+        fs::create_dir_all(images_hd_dir)
+            .with_context(|| format!("creating {}", images_hd_dir.display()))?;
+    }
+    for (index, icon_texture_hash, icon_hd_texture_hash) in icon_jobs {
+        let icon_path = images_dir.join(format!("{index}.png"));
+        if !export_skill_icon(&mut archive, icon_texture_hash, &icon_path)
+            .with_context(|| format!("exporting skill {index} icon"))?
+        {
+            bail!("skill {index} icon file id {icon_texture_hash} is missing from the DAT index");
+        }
+        if icon_hd_texture_hash != 0
+            && let Some(images_hd_dir) = images_hd_dir
+        {
+            let icon_path = images_hd_dir.join(format!("{index}.png"));
+            if !export_skill_icon(&mut archive, icon_hd_texture_hash, &icon_path)
+                .with_context(|| format!("exporting skill {index} HD icon"))?
+            {
+                bail!(
+                    "skill {index} HD icon file id {icon_hd_texture_hash} is missing from the DAT index"
+                );
+            }
+        }
+    }
 
     let final_output = OutputManifest {
-        generated_at: Utc::now().to_rfc3339(),
+        schema_version: SKILL_OUTPUT_SCHEMA_VERSION,
         counts: OutputCounts {
             skills: extracted_skills.len(),
             campaigns: campaigns_stats,
         },
         skills: extracted_skills,
     };
-
-    let serialized = serde_json::to_string_pretty(&final_output)?;
-    fs::write(out_path, serialized)?;
-    Ok(())
+    write_json(out_path, &final_output)
 }

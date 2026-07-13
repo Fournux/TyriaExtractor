@@ -1,4 +1,6 @@
 use super::*;
+use crate::tests::TestDir;
+use std::fs;
 
 #[test]
 fn packet_log_items_json_is_flat_scalar_rows_with_names() -> anyhow::Result<()> {
@@ -300,6 +302,8 @@ fn packet_log_items_json_deduplicates_model_file_variant_and_prefers_named_row()
     assert_eq!(items[0]["model_id"].as_u64(), Some(32));
     assert_eq!(items[0]["model_file_id"].as_u64(), Some(222));
     assert_eq!(items[0]["name_en"].as_str(), Some("Black Dye"));
+    assert_eq!(items[0]["item_ids"], serde_json::json!([1, 2]));
+    assert_eq!(items[0]["observed_variants"].as_array().unwrap().len(), 2);
     Ok(())
 }
 

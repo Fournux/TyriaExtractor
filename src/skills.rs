@@ -63,7 +63,7 @@ struct ExtractedSkill {
     flags: SkillFlags,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct OutputCampaignStats {
     non_elite: usize,
     elite: usize,
@@ -78,9 +78,39 @@ struct OutputCounts {
 
 #[derive(Serialize)]
 struct OutputManifest {
-    generated_at: String,
+    schema_version: u32,
     counts: OutputCounts,
     skills: Vec<ExtractedSkill>,
+}
+const SKILL_OUTPUT_SCHEMA_VERSION: u32 = 1;
+const EXPECTED_SKILL_DISTRIBUTION: [(&str, usize, usize); 5] = [
+    ("core", 212, 40),
+    ("prophecies", 154, 60),
+    ("factions", 260, 90),
+    ("nightfall", 253, 110),
+    ("eye_of_the_north", 147, 3),
+];
+
+fn validate_skill_distribution(
+    campaigns: &BTreeMap<String, OutputCampaignStats>,
+    total: usize,
+) -> anyhow::Result<()> {
+    for (campaign, expected_non_elite, expected_elite) in EXPECTED_SKILL_DISTRIBUTION {
+        let actual = campaigns
+            .get(campaign)
+            .ok_or_else(|| anyhow::anyhow!("missing {campaign} skill statistics"))?;
+        if actual.non_elite != expected_non_elite || actual.elite != expected_elite {
+            anyhow::bail!(
+                "{campaign} skill distribution is {}/{} instead of {expected_non_elite}/{expected_elite}",
+                actual.non_elite,
+                actual.elite
+            );
+        }
+    }
+    if total != 1329 {
+        anyhow::bail!("skill catalog contains {total} skills instead of 1329");
+    }
+    Ok(())
 }
 
 fn decoded_energy_cost(encoded: u8) -> u32 {
@@ -134,5 +164,43 @@ fn skill_type_name(code: u32) -> &'static str {
         26 => "form",
         27 => "chant",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_required_skill_distribution() {
+        let campaigns = EXPECTED_SKILL_DISTRIBUTION
+            .into_iter()
+            .map(|(campaign, non_elite, elite)| {
+                (
+                    campaign.to_string(),
+                    OutputCampaignStats {
+                        non_elite,
+                        elite,
+                        total: non_elite + elite,
+                    },
+                )
+            })
+            .collect();
+        validate_skill_distribution(&campaigns, 1329).unwrap();
+    }
+
+    #[test]
+    fn rejects_incomplete_skill_distribution() {
+        let campaigns = BTreeMap::from([(
+            "core".to_string(),
+            OutputCampaignStats {
+                non_elite: 211,
+                elite: 40,
+                total: 251,
+            },
+        )]);
+        let error = validate_skill_distribution(&campaigns, 251)
+            .expect_err("incomplete skill catalog must fail");
+        assert!(format!("{error:#}").contains("core skill distribution"));
     }
 }

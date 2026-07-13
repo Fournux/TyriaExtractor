@@ -1,36 +1,29 @@
 use crate::{
-    cli::{Cli, Command, ExtractCommand, ExtractTarget},
+    cli::{Cli, Command, ExtractCommand},
     dat::{
         dump_entries, hash_lookup_by_file_id, hash_lookup_by_mft_index,
         lookup_mft_entry_for_file_id, lookup_mft_stream_entry_from_base, read_dat_entry_from_file,
         read_dat_table, read_hash_lookup,
     },
     file_ref::{decode_file_reference, encode_file_reference},
-    items::{
-        RuntimeTextLookup, asyncdecode_item_ids_for_test, encoded_value_spans_for_test,
-        encoded_values_for_test, export_detected_items_from_packet_log,
-        export_detected_items_from_packet_log_with_client_strings, packet_log_decoded_text_records,
-        packet_log_name_ids, packet_log_name_seeds,
-    },
     text::{detect_entry_kind, utf16le_strings},
-    text_records,
 };
 use clap::Parser;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs::{self, File},
     path::{Path, PathBuf},
 };
 
 static TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-struct TestDir {
+pub(crate) struct TestDir {
     path: PathBuf,
 }
 
 impl TestDir {
-    fn new() -> anyhow::Result<Self> {
+    pub(crate) fn new() -> anyhow::Result<Self> {
         let id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
         let path =
             std::env::temp_dir().join(format!("tyria-extractor-test-{}-{id}", std::process::id()));
@@ -38,7 +31,7 @@ impl TestDir {
         Ok(Self { path })
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -248,8 +241,9 @@ fn utf16le_fixture(strings: &[&str]) -> Vec<u8> {
     bytes
 }
 
+#[path = "tests/cli.rs"]
 mod cli;
+#[path = "tests/dat.rs"]
 mod dat;
-mod items;
-mod text;
+#[path = "tests/textures.rs"]
 mod textures;

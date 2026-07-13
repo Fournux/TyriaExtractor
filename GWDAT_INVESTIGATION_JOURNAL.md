@@ -152,6 +152,8 @@ Reward components are nested in `QUEST_DESCRIPTION` EncStrings. Confirmed wrappe
 
 The corpus is append-only and session-scoped. New rows carry `session_id`; quest schema/status rows also carry the client PE timestamp. `AGENT_DESPAWNED` and `INSTANCE_LOAD_INFO` prevent transient agent joins from leaking across despawns or map changes. `capture_health` rows expose lock drops, capacity evictions, and write failures; a missing health row is not evidence of zero loss.
 
+The offline consumer now enforces that evidence boundary. Every session containing quest or item data must include `capture_health`; nonzero lock drops, capacity evictions, or write failures reject extraction. Quest sessions must additionally provide all 13 `quest_schema` rows, with recognized names, internally consistent field counts, packet-size-compatible descriptors, and no conflicting client PE timestamps. `extract items` and `extract quests` fail closed by default; `--allow-unverified-capture` exists only for explicit legacy-log recovery. Successful capture-backed extractions write a deterministic `capture.json` sidecar (schema version 1) containing per-session counters, schema headers, client timestamp, verification status, and issues.
+
 No packet or client structure examined contains generic quest minimum levels, prerequisite quest IDs, or an availability expression. `DIALOG_BUTTON` proves only that an action was available to that character at that moment. Candidate conditions require controlled cross-character observations; manually curated requirements must remain in a separate site layer keyed by `quest_id`, never in reproducible extractor output without first-party evidence.
 
 ## Open questions

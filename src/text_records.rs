@@ -42,10 +42,12 @@ pub(crate) fn plausible_record_header(data: &[u8], offset: usize) -> bool {
             .is_some()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_text_record_map(bytes: &[u8]) -> anyhow::Result<BTreeMap<u32, String>> {
     parse_text_record_map_with_decoded_records(bytes, &BTreeMap::new())
 }
 
+#[cfg(test)]
 pub(crate) fn parse_text_record_map_with_decoded_records(
     bytes: &[u8],
     decoded_records: &BTreeMap<Vec<u8>, String>,

@@ -1,4 +1,5 @@
 mod atex;
+mod capture;
 mod cli;
 mod dat;
 mod file_ref;
@@ -19,7 +20,7 @@ mod tests;
 
 use clap::Parser;
 
-use cli::{Cli, Command, ExtractCommand, ExtractTarget};
+use cli::{Cli, Command, ExtractCommand};
 
 use crate::{
     dat::{dump_entries, read_dat_entry},
@@ -27,41 +28,45 @@ use crate::{
 };
 
 pub fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    execute(Cli::parse())
+}
 
-    if let Some(target) = cli.extract {
-        match target {
-            ExtractTarget::Skills => workflows::extract_skills(&cli.snapshot)?,
-            ExtractTarget::Items => workflows::extract_items(&cli.snapshot, None, false, false)?,
-        }
-        return Ok(());
-    }
-
-    let Some(command) = cli.command else {
-        anyhow::bail!(
-            "missing command; use --extract <skills|items> --snapshot <path> or a subcommand"
-        );
-    };
-
+pub(crate) fn execute(cli: Cli) -> anyhow::Result<()> {
+    let Cli {
+        out_dir: extraction_root,
+        command,
+    } = cli;
     match command {
         Command::Extract { target } => match target {
-            ExtractCommand::Skills { snapshot } => workflows::extract_skills(&snapshot)?,
+            ExtractCommand::Skills { snapshot } => {
+                workflows::extract_skills(&snapshot, &extraction_root)?
+            }
             ExtractCommand::Items {
                 snapshot,
                 packet_log,
                 skip_icons,
                 use_client_strings,
+                allow_unverified_capture,
             } => workflows::extract_items(
                 &snapshot,
                 packet_log.as_deref(),
                 skip_icons,
                 use_client_strings,
+                allow_unverified_capture,
+                &extraction_root,
             )?,
             ExtractCommand::Quests {
                 snapshot,
                 packet_log,
                 item_log,
-            } => workflows::extract_quests(&snapshot, &packet_log, item_log.as_deref())?,
+                allow_unverified_capture,
+            } => workflows::extract_quests(
+                &snapshot,
+                &packet_log,
+                item_log.as_deref(),
+                allow_unverified_capture,
+                &extraction_root,
+            )?,
         },
         Command::DumpEntries {
             gw_dat,
