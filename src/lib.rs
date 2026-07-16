@@ -5,14 +5,17 @@ mod dat;
 mod file_ref;
 mod gw_dat_decompress;
 mod icon_payload;
+mod images;
 mod io_util;
 mod items;
 mod models;
+mod npcs;
 mod pe;
 mod quests;
 mod skills;
 mod text;
 mod text_records;
+mod vendors;
 mod workflows;
 
 #[cfg(test)]
@@ -41,32 +44,34 @@ pub(crate) fn execute(cli: Cli) -> anyhow::Result<()> {
             ExtractCommand::Skills { snapshot } => {
                 workflows::extract_skills(&snapshot, &extraction_root)?
             }
+            ExtractCommand::Images { snapshot } => {
+                workflows::extract_images(&snapshot, &extraction_root)?
+            }
             ExtractCommand::Items {
                 snapshot,
                 packet_log,
                 skip_icons,
                 use_client_strings,
-                allow_unverified_capture,
             } => workflows::extract_items(
                 &snapshot,
-                packet_log.as_deref(),
+                &packet_log,
                 skip_icons,
                 use_client_strings,
-                allow_unverified_capture,
                 &extraction_root,
             )?,
             ExtractCommand::Quests {
                 snapshot,
                 packet_log,
                 item_log,
-                allow_unverified_capture,
-            } => workflows::extract_quests(
-                &snapshot,
-                &packet_log,
-                item_log.as_deref(),
-                allow_unverified_capture,
-                &extraction_root,
-            )?,
+            } => workflows::extract_quests(&snapshot, &packet_log, &item_log, &extraction_root)?,
+            ExtractCommand::Npcs {
+                snapshot,
+                packet_log,
+            } => workflows::extract_npcs(&snapshot, &packet_log, &extraction_root)?,
+            ExtractCommand::Vendors {
+                snapshot,
+                packet_log,
+            } => workflows::extract_vendors(&snapshot, &packet_log, &extraction_root)?,
         },
         Command::DumpEntries {
             gw_dat,

@@ -85,7 +85,8 @@ impl IconPayload<'_> {
 }
 
 pub(crate) fn decode_icon_payload(bytes: &[u8]) -> anyhow::Result<Option<IconPayload<'_>>> {
-    if let Ok(header) = atex::parse_header(bytes) {
+    if bytes.starts_with(b"ATEX") || bytes.starts_with(b"ATTX") {
+        let header = atex::parse_header(bytes)?;
         return Ok(Some(IconPayload::Atex { bytes, header }));
     }
 
@@ -114,17 +115,25 @@ pub(crate) fn decode_icon_payload(bytes: &[u8]) -> anyhow::Result<Option<IconPay
 }
 
 pub(crate) fn find_inline_atex_payload(bytes: &[u8]) -> Option<(usize, &[u8], AtexHeader)> {
-    let max_start = bytes.len().checked_sub(20)?;
-    for offset in 0..=max_start {
+    find_inline_atex_payloads(bytes).next()
+}
+
+pub(crate) fn find_inline_atex_payloads(
+    bytes: &[u8],
+) -> impl Iterator<Item = (usize, &[u8], AtexHeader)> {
+    let max_start = bytes.len().saturating_sub(20);
+    (0..=max_start).filter_map(move |offset| {
+        let magic = bytes.get(offset..offset + 4)?;
+        if magic != b"ATEX" && magic != b"ATTX" {
+            return None;
+        }
         let payload_len = bytes.len() - offset;
         let aligned_len = payload_len - (payload_len % 4);
         if aligned_len < 20 {
-            continue;
+            return None;
         }
         let payload = &bytes[offset..offset + aligned_len];
-        if let Ok(header) = atex::parse_header(payload) {
-            return Some((offset, payload, header));
-        }
-    }
-    None
+        let header = atex::parse_header(payload).ok()?;
+        Some((offset, payload, header))
+    })
 }

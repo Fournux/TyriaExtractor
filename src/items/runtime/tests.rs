@@ -18,6 +18,7 @@ fn packet_log_items_json_is_flat_scalar_rows_with_names() -> anyhow::Result<()> 
     assert_eq!(packet_log_name_ids(&packet_log)?, BTreeSet::from([8360]));
 
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             8360,
             BTreeMap::from([
@@ -286,6 +287,7 @@ fn packet_log_items_json_deduplicates_model_file_variant_and_prefers_named_row()
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             8360,
             BTreeMap::from([("en".to_string(), "Black Dye".to_string())]),
@@ -319,6 +321,7 @@ fn packet_log_items_json_keeps_distinct_model_file_variants() -> anyhow::Result<
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([
             (
                 100,
@@ -354,6 +357,7 @@ fn packet_log_names_can_fall_back_to_model_file_table() -> anyhow::Result<()> {
         "{\"item_id\":1,\"model_file_id\":111926,\"item_type\":3,\"extra_id\":0,\"materials\":0,\"interaction\":536875008,\"price\":5,\"model_id\":32}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::new(),
         by_model_file_id: BTreeMap::from([(
             111926,
@@ -378,6 +382,7 @@ fn packet_log_exact_name_ids_fill_missing_languages_from_model_file_table() -> a
         "{\"item_id\":1,\"model_file_id\":111926,\"item_type\":3,\"extra_id\":0,\"materials\":0,\"interaction\":536875008,\"price\":5,\"model_id\":32,\"name_id\":100,\"enc_name_hex\":\"64010000\"}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             100,
             BTreeMap::from([("en".to_string(), "Black Dye".to_string())]),
@@ -409,6 +414,7 @@ fn compact_item_row_resolves_name_and_description_text_ids() -> anyhow::Result<(
         "{\"model_id\":32,\"model_file_id\":111926,\"item_type\":3,\"materials\":0,\"name_text_id\":100,\"enc_name_hex\":\"64010000\",\"desc_enc_hex\":\"64010000\"}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             100,
             BTreeMap::from([("en".to_string(), "Black Dye".to_string())]),
@@ -445,6 +451,7 @@ fn packet_log_encoded_name_hex_expands_template_names() -> anyhow::Result<()> {
     );
 
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([
             (
                 100,
@@ -483,6 +490,7 @@ fn python_itemgeneral_rows_match_runtime_export_schema() -> anyhow::Result<()> {
         "{\"item_id\":40,\"model_file_id\":2147595574,\"type\":3,\"extra_id\":0,\"materials\":0,\"interaction\":536875008,\"price\":5,\"model_id\":32,\"quantity\":1,\"decoded_name\":\"Teinture noire\",\"enc_name_hex\":\"a82157d18fb56f160000\"}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             8360,
             BTreeMap::from([
@@ -514,6 +522,7 @@ fn packet_log_desc_enc_hex_expands_description_templates() -> anyhow::Result<()>
     )?;
     assert!(packet_log_name_ids(&packet_log)?.is_superset(&BTreeSet::from([100, 300, 400])));
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([
             (
                 100,
@@ -560,11 +569,12 @@ fn runtime_item_strings_attach_description_without_extra_item_row() -> anyhow::R
         &packet_log,
         concat!(
             "{\"item_id\":2,\"model_file_id\":111926,\"item_type\":3,\"extra_id\":0,\"materials\":0,\"interaction\":536875008,\"price\":5,\"model_id\":32,\"name_id\":100,\"enc_name_hex\":\"64010000\",\"decoded_ids\":[100]}\n",
-            "{\"kind\":\"runtime_item_strings\",\"item_id\":2,\"model_id\":32,\"model_file_id\":111926,\"desc_enc_hex\":\"2c0290020000\"}\n",
+            "{\"kind\":\"runtime_item_strings\",\"item_id\":2,\"model_id\":32,\"model_file_id\":111926,\"desc_complete\":true,\"desc_enc_hex\":\"2c0290020000\"}\n",
         ),
     )?;
     assert!(packet_log_name_ids(&packet_log)?.is_superset(&BTreeSet::from([100, 300, 400])));
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([
             (
                 100,
@@ -591,6 +601,10 @@ fn runtime_item_strings_attach_description_without_extra_item_row() -> anyhow::R
     assert_eq!(items[0]["item_type"].as_u64(), Some(3));
     assert_eq!(items[0]["name_en"].as_str(), Some("Black Dye"));
     assert_eq!(
+        items[0]["runtime_description_available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
         items[0]["description_en"].as_str(),
         Some("Use: opens a kit.")
     );
@@ -605,10 +619,11 @@ fn runtime_item_strings_complete_name_can_name_item() -> anyhow::Result<()> {
         &packet_log,
         concat!(
             "{\"item_id\":2,\"model_file_id\":111926,\"item_type\":3,\"extra_id\":0,\"materials\":0,\"interaction\":536875008,\"price\":5,\"model_id\":32}\n",
-            "{\"kind\":\"runtime_item_strings\",\"item_id\":2,\"model_id\":32,\"model_file_id\":111926,\"complete_name_enc_hex\":\"2c0264010000\"}\n",
+            "{\"kind\":\"runtime_item_strings\",\"item_id\":2,\"model_id\":32,\"model_file_id\":111926,\"desc_complete\":false,\"complete_name_enc_hex\":\"2c0264010000\"}\n",
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([
             (
                 100,
@@ -628,6 +643,7 @@ fn runtime_item_strings_complete_name_can_name_item() -> anyhow::Result<()> {
     let item = json.as_array().unwrap().first().unwrap();
 
     assert_eq!(item["name_en"].as_str(), Some("Black Dye"));
+    assert_eq!(item["runtime_description_available"].as_bool(), Some(false));
     Ok(())
 }
 
@@ -644,6 +660,7 @@ fn text_decode_ids_match_runtime_hex_with_extra_null() -> anyhow::Result<()> {
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             100,
             BTreeMap::from([("en".to_string(), "Black Dye".to_string())]),
@@ -673,6 +690,7 @@ fn decoded_description_rows_attach_multilingual_descriptions() -> anyhow::Result
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             100,
             BTreeMap::from([("en".to_string(), "Black Dye".to_string())]),
@@ -702,6 +720,7 @@ fn packet_log_merged_single_decoded_id_can_name_item() -> anyhow::Result<()> {
         "{\"item_id\":6508,\"model_file_id\":152714,\"item_type\":22,\"extra_id\":0,\"materials\":0,\"interaction\":0,\"price\":0,\"model_id\":6508,\"name_id\":9396,\"enc_name_hex\":\"b425cfe100ef786f0000\",\"decoded_ids\":[9396]}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             9396,
             BTreeMap::from([("en".to_string(), "Sceptre luminescent".to_string())]),
@@ -726,6 +745,7 @@ fn unresolved_encoded_name_hex_does_not_use_unsafe_local_fallback() -> anyhow::R
         "{\"item_id\":6508,\"model_file_id\":152714,\"item_type\":22,\"extra_id\":0,\"materials\":0,\"interaction\":0,\"price\":0,\"model_id\":6508,\"name_id\":9396,\"enc_name_hex\":\"b425cfe100ef786f0000\"}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             9396,
             BTreeMap::from([("en".to_string(), "Wrong local fallback".to_string())]),
@@ -752,6 +772,7 @@ fn unresolved_encoded_name_hex_can_use_model_file_fallback() -> anyhow::Result<(
         "{\"item_id\":6508,\"model_file_id\":152714,\"item_type\":22,\"extra_id\":0,\"materials\":0,\"interaction\":0,\"price\":0,\"model_id\":6508,\"name_id\":9396,\"enc_name_hex\":\"b425cfe100ef786f0000\"}\n",
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             9396,
             BTreeMap::from([("en".to_string(), "Wrong local fallback".to_string())]),
@@ -774,6 +795,31 @@ fn unresolved_encoded_name_hex_can_use_model_file_fallback() -> anyhow::Result<(
 }
 
 #[test]
+fn resolved_text_id_can_name_compact_item() -> anyhow::Result<()> {
+    let temp = TestDir::new()?;
+    let packet_log = temp.path().join("tyria_packets.jsonl");
+    fs::write(
+        &packet_log,
+        "{\"item_id\":6508,\"model_file_id\":152714,\"item_type\":22,\"extra_id\":0,\"materials\":0,\"interaction\":0,\"price\":0,\"model_id\":6508,\"name_id\":9396,\"enc_name_hex\":\"b425cfe100ef786f0000\"}\n",
+    )?;
+    let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::from([9396]),
+        by_text_id: BTreeMap::from([(
+            9396,
+            BTreeMap::from([("en".to_string(), "Sceptre luminescent".to_string())]),
+        )]),
+        by_model_file_id: BTreeMap::new(),
+    };
+
+    let out = temp.path().join("items/items.json");
+    export_detected_items_from_packet_log(&packet_log, &names, &out)?;
+    let json: serde_json::Value = serde_json::from_reader(File::open(out)?)?;
+
+    assert_eq!(json[0]["name_en"].as_str(), Some("Sceptre luminescent"));
+    Ok(())
+}
+
+#[test]
 fn packet_log_uses_official_multilingual_names_for_known_itemgeneral_samples() -> anyhow::Result<()>
 {
     let temp = TestDir::new()?;
@@ -792,6 +838,7 @@ fn packet_log_uses_official_multilingual_names_for_known_itemgeneral_samples() -
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([
             (
                 9757,
@@ -857,6 +904,7 @@ fn official_decoded_names_override_unsafe_local_guesses() -> anyhow::Result<()> 
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             21992,
             BTreeMap::from([("en".to_string(), "Kaineng Docks".to_string())]),
@@ -885,6 +933,7 @@ fn client_decoded_names_are_opt_in() -> anyhow::Result<()> {
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             100,
             BTreeMap::from([("en".to_string(), "Dat Name".to_string())]),
@@ -958,6 +1007,7 @@ fn official_current_language_can_validate_local_multilingual_names() -> anyhow::
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             1000,
             BTreeMap::from([
@@ -992,6 +1042,7 @@ fn official_current_language_can_validate_name_id_after_encoded_decode_miss() ->
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             9396,
             BTreeMap::from([
@@ -1025,6 +1076,7 @@ fn official_generic_names_override_invalid_client_rows() -> anyhow::Result<()> {
         ),
     )?;
     let names = RuntimeTextLookup {
+        exact_text_ids: BTreeSet::new(),
         by_text_id: BTreeMap::from([(
             8326,
             BTreeMap::from([

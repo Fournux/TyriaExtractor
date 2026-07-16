@@ -40,6 +40,22 @@ fn cli_accepts_extract_subcommands_with_explicit_snapshot() {
         other => panic!("extract skills parsed as unexpected command: {other:?}"),
     }
 
+    let images = Cli::try_parse_from([
+        "gwdb-extractor",
+        "extract",
+        "images",
+        "--snapshot",
+        "Gw.dat",
+    ])
+    .expect("extract images subcommand should parse");
+    assert_eq!(images.out_dir, PathBuf::from("output"));
+    match images.command {
+        Command::Extract {
+            target: ExtractCommand::Images { snapshot },
+        } => assert_eq!(snapshot, PathBuf::from("Gw.dat")),
+        other => panic!("extract images parsed as unexpected command: {other:?}"),
+    }
+
     let items = Cli::try_parse_from([
         "gwdb-extractor",
         "extract",
@@ -59,14 +75,12 @@ fn cli_accepts_extract_subcommands_with_explicit_snapshot() {
                     packet_log,
                     skip_icons,
                     use_client_strings,
-                    allow_unverified_capture,
                 },
         } => {
             assert_eq!(snapshot, PathBuf::from("items.snapshot"));
-            assert_eq!(packet_log, Some(PathBuf::from("tyria_packets.jsonl")));
+            assert_eq!(packet_log, vec![PathBuf::from("tyria_packets.jsonl")]);
             assert!(skip_icons);
             assert!(!use_client_strings);
-            assert!(!allow_unverified_capture);
         }
         other => panic!("extract items parsed as unexpected command: {other:?}"),
     }
@@ -103,7 +117,6 @@ fn cli_accepts_extract_subcommands_with_explicit_snapshot() {
         "tyria_quests.jsonl",
         "--item-log",
         "tyria_items.jsonl",
-        "--allow-unverified-capture",
     ])
     .expect("extract quests subcommand should parse");
     match quests.command {
@@ -113,16 +126,28 @@ fn cli_accepts_extract_subcommands_with_explicit_snapshot() {
                     snapshot,
                     packet_log,
                     item_log,
-                    allow_unverified_capture,
                 },
         } => {
             assert_eq!(snapshot, PathBuf::from("Gw.dat"));
-            assert_eq!(packet_log, PathBuf::from("tyria_quests.jsonl"));
-            assert_eq!(item_log, Some(PathBuf::from("tyria_items.jsonl")));
-            assert!(allow_unverified_capture);
+            assert_eq!(packet_log, vec![PathBuf::from("tyria_quests.jsonl")]);
+            assert_eq!(item_log, vec![PathBuf::from("tyria_items.jsonl")]);
         }
         other => panic!("extract quests parsed as unexpected command: {other:?}"),
     }
+
+    assert!(
+        Cli::try_parse_from([
+            "gwdb-extractor",
+            "extract",
+            "quests",
+            "--snapshot",
+            "Gw.dat",
+            "--packet-log",
+            "tyria_quests.jsonl",
+            "--allow-unverified-capture",
+        ])
+        .is_err()
+    );
 }
 
 #[test]

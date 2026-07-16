@@ -8,100 +8,116 @@ use std::{
     path::Path,
 };
 
-pub(crate) const CAPTURE_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CAPTURE_MANIFEST_SCHEMA_VERSION: u32 = 3;
+pub(crate) const CAPTURE_FORMAT_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CaptureDomain {
     General,
-    Quest,
+    World,
 }
 
 impl CaptureDomain {
     fn label(self) -> &'static str {
         match self {
             Self::General => "general",
-            Self::Quest => "quest",
+            Self::World => "world",
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct QuestPacketSpec {
+pub(crate) struct WorldPacketSpec {
     pub(crate) header: u32,
     pub(crate) name: &'static str,
     pub(crate) size: usize,
 }
 
-pub(crate) const QUEST_PACKET_SPECS: [QuestPacketSpec; 13] = [
-    QuestPacketSpec {
+pub(crate) const WORLD_PACKET_SPECS: [WorldPacketSpec; 16] = [
+    WorldPacketSpec {
         header: 0x0020,
         name: "AGENT_SPAWNED",
         size: 0x74,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0021,
         name: "AGENT_DESPAWNED",
         size: 8,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0049,
         name: "QUEST_ADD",
         size: 0x50,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x004c,
         name: "QUEST_DESCRIPTION",
         size: 0x208,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0050,
         name: "QUEST_GENERAL_INFO",
         size: 0x40,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0051,
         name: "QUEST_UPDATE_MARKER",
         size: 0x18,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0052,
         name: "QUEST_REMOVE",
         size: 8,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0053,
         name: "QUEST_ADD_MARKER",
         size: 0x18,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0054,
         name: "QUEST_UPDATE_OBJECTIVES",
         size: 0x108,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0056,
         name: "NPC_UPDATE_PROPERTIES",
         size: 0x34,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x007e,
         name: "DIALOG_BUTTON",
         size: 0x110,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
         header: 0x0081,
         name: "DIALOG_SENDER",
         size: 8,
     },
-    QuestPacketSpec {
+    WorldPacketSpec {
+        header: 0x009b,
+        name: "AGENT_UPDATE_NPC_NAME",
+        size: 0x48,
+    },
+    WorldPacketSpec {
+        header: 0x00c3,
+        name: "WINDOW_MERCHANT",
+        size: 0x0c,
+    },
+    WorldPacketSpec {
+        header: 0x00c4,
+        name: "WINDOW_OWNER",
+        size: 8,
+    },
+    WorldPacketSpec {
         header: 0x0199,
         name: "INSTANCE_LOAD_INFO",
         size: 0x1c,
     },
 ];
 
-pub(crate) fn quest_packet_spec(header: u32) -> Option<&'static QuestPacketSpec> {
-    QUEST_PACKET_SPECS.iter().find(|spec| spec.header == header)
+pub(crate) fn world_packet_spec(header: u32) -> Option<&'static WorldPacketSpec> {
+    WORLD_PACKET_SPECS.iter().find(|spec| spec.header == header)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -109,21 +125,23 @@ struct CaptureHealthRow {
     #[serde(default)]
     session_id: u64,
     #[serde(default)]
+    capture_format_version: u32,
+    #[serde(default)]
     general_dropped_on_lock: u64,
     #[serde(default)]
     general_dropped_on_capacity: u64,
     #[serde(default)]
     general_write_failures: u64,
     #[serde(default)]
-    quest_dropped_on_lock: u64,
+    world_dropped_on_lock: u64,
     #[serde(default)]
-    quest_dropped_on_capacity: u64,
+    world_dropped_on_capacity: u64,
     #[serde(default)]
-    quest_write_failures: u64,
+    world_write_failures: u64,
 }
 
 #[derive(Debug, Deserialize)]
-struct QuestSchemaRow {
+struct WorldPacketSchemaRow {
     #[serde(default)]
     session_id: u64,
     header: u32,
@@ -141,7 +159,10 @@ struct SessionCaptureState {
     dropped_on_lock: u64,
     dropped_on_capacity: u64,
     write_failures: u64,
-    schemas: BTreeMap<u32, QuestSchemaRow>,
+    capture_format_versions: BTreeSet<u32>,
+    capture_sequences: BTreeSet<u64>,
+    missing_capture_sequences: usize,
+    schemas: BTreeMap<u32, WorldPacketSchemaRow>,
     client_pe_timestamps: BTreeSet<u32>,
     issues: Vec<String>,
 }
@@ -153,8 +174,10 @@ pub(crate) struct CaptureSessionReport {
     dropped_on_lock: u64,
     dropped_on_capacity: u64,
     write_failures: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_format_version: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    quest_schema_headers: Vec<u32>,
+    world_packet_schema_headers: Vec<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client_pe_timestamp: Option<u32>,
     verified: bool,
@@ -225,6 +248,20 @@ pub(crate) fn for_each_jsonl_value(
     Ok(())
 }
 
+fn is_world_data_kind(kind: Option<&str>) -> bool {
+    matches!(
+        kind,
+        Some(
+            "world_packet"
+                | "collector_offers"
+                | "merchant_items"
+                | "crafter_products"
+                | "skill_trainer_skills"
+                | "vendor_catalog"
+        )
+    )
+}
+
 pub(crate) fn analyze_capture(
     path: &Path,
     domain: CaptureDomain,
@@ -242,16 +279,19 @@ pub(crate) fn analyze_capture(
                 .with_context(|| format!("decoding capture_health at line {line_number}"))?;
             let state = sessions.entry(health.session_id).or_default();
             state.health_rows += 1;
+            state
+                .capture_format_versions
+                .insert(health.capture_format_version);
             let (dropped_on_lock, dropped_on_capacity, write_failures) = match domain {
                 CaptureDomain::General => (
                     health.general_dropped_on_lock,
                     health.general_dropped_on_capacity,
                     health.general_write_failures,
                 ),
-                CaptureDomain::Quest => (
-                    health.quest_dropped_on_lock,
-                    health.quest_dropped_on_capacity,
-                    health.quest_write_failures,
+                CaptureDomain::World => (
+                    health.world_dropped_on_lock,
+                    health.world_dropped_on_capacity,
+                    health.world_write_failures,
                 ),
             };
             state.dropped_on_lock = state.dropped_on_lock.max(dropped_on_lock);
@@ -260,17 +300,17 @@ pub(crate) fn analyze_capture(
             return Ok(());
         }
 
-        if kind == Some("quest_schema") {
-            if domain != CaptureDomain::Quest {
+        if kind == Some("world_packet_schema") {
+            if domain != CaptureDomain::World {
                 return Ok(());
             }
-            let schema: QuestSchemaRow = serde_json::from_value(value)
-                .with_context(|| format!("decoding quest_schema at line {line_number}"))?;
+            let schema: WorldPacketSchemaRow = serde_json::from_value(value)
+                .with_context(|| format!("decoding world_packet_schema at line {line_number}"))?;
             let state = sessions.entry(schema.session_id).or_default();
             if let Some(timestamp) = schema.client_pe_timestamp {
                 state.client_pe_timestamps.insert(timestamp);
             }
-            validate_quest_schema(&schema, &mut state.issues);
+            validate_world_packet_schema(&schema, &mut state.issues);
             match state.schemas.entry(schema.header) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(schema);
@@ -292,7 +332,7 @@ pub(crate) fn analyze_capture(
         }
 
         let has_data = match domain {
-            CaptureDomain::Quest => matches!(kind, Some("quest_packet" | "quest_snapshot")),
+            CaptureDomain::World => is_world_data_kind(kind),
             CaptureDomain::General => {
                 value.get("model_id").is_some()
                     || value
@@ -302,7 +342,19 @@ pub(crate) fn analyze_capture(
             }
         };
         if has_data {
-            sessions.entry(session_id).or_default().has_data = true;
+            let state = sessions.entry(session_id).or_default();
+            state.has_data = true;
+            if domain == CaptureDomain::World {
+                match value.get("capture_seq").and_then(Value::as_u64) {
+                    Some(sequence) if !state.capture_sequences.insert(sequence) => {
+                        state.issues.push(format!(
+                            "session {session_id} repeats capture_seq {sequence}"
+                        ));
+                    }
+                    Some(_) => {}
+                    None => state.missing_capture_sequences += 1,
+                }
+            }
         }
         Ok(())
     })?;
@@ -317,9 +369,27 @@ pub(crate) fn analyze_capture(
 
     let mut reports = Vec::with_capacity(sessions.len());
     for (session_id, mut state) in sessions {
+        let capture_format_version = state.capture_format_versions.first().copied();
         if state.has_data && state.health_rows == 0 {
             state.issues.push(format!(
                 "session {session_id} has data but no capture_health row"
+            ));
+        }
+        if state.has_data
+            && (state.capture_format_versions.len() != 1
+                || !state
+                    .capture_format_versions
+                    .contains(&CAPTURE_FORMAT_VERSION))
+        {
+            state.issues.push(format!(
+                "session {session_id} uses capture format {:?}; expected version {CAPTURE_FORMAT_VERSION}",
+                state.capture_format_versions
+            ));
+        }
+        if state.missing_capture_sequences != 0 {
+            state.issues.push(format!(
+                "session {session_id} has {} data rows without capture_seq",
+                state.missing_capture_sequences
             ));
         }
         if state.dropped_on_lock != 0 {
@@ -340,11 +410,11 @@ pub(crate) fn analyze_capture(
                 state.write_failures
             ));
         }
-        if domain == CaptureDomain::Quest && state.has_data {
-            for spec in QUEST_PACKET_SPECS {
-                if !state.schemas.contains_key(&spec.header) {
+        if domain == CaptureDomain::World && state.has_data {
+            for spec in WORLD_PACKET_SPECS {
+                if spec.header != 0x009b && !state.schemas.contains_key(&spec.header) {
                     state.issues.push(format!(
-                        "session {session_id} is missing quest schema 0x{:04X} {}",
+                        "session {session_id} is missing world packet schema 0x{:04X} {}",
                         spec.header, spec.name
                     ));
                 }
@@ -362,7 +432,8 @@ pub(crate) fn analyze_capture(
             dropped_on_lock: state.dropped_on_lock,
             dropped_on_capacity: state.dropped_on_capacity,
             write_failures: state.write_failures,
-            quest_schema_headers: state.schemas.into_keys().collect(),
+            capture_format_version,
+            world_packet_schema_headers: state.schemas.into_keys().collect(),
             client_pe_timestamp: state.client_pe_timestamps.first().copied(),
             verified,
             issues: state.issues,
@@ -375,10 +446,10 @@ pub(crate) fn analyze_capture(
     })
 }
 
-fn validate_quest_schema(schema: &QuestSchemaRow, issues: &mut Vec<String>) {
-    let Some(spec) = quest_packet_spec(schema.header) else {
+fn validate_world_packet_schema(schema: &WorldPacketSchemaRow, issues: &mut Vec<String>) {
+    let Some(spec) = world_packet_spec(schema.header) else {
         issues.push(format!(
-            "session {} contains unknown quest schema header 0x{:04X}",
+            "session {} contains unknown world packet schema header 0x{:04X}",
             schema.session_id, schema.header
         ));
         return;
@@ -441,10 +512,10 @@ mod tests {
         ))
     }
 
-    fn schema_row(spec: QuestPacketSpec) -> Value {
+    fn schema_row(spec: WorldPacketSpec) -> Value {
         let utf16_count = (spec.size - 4) / 2;
         serde_json::json!({
-            "kind": "quest_schema",
+            "kind": "world_packet_schema",
             "session_id": 7,
             "header": spec.header,
             "name": spec.name,
@@ -455,25 +526,29 @@ mod tests {
     }
 
     #[test]
-    fn verifies_complete_lossless_quest_capture() -> anyhow::Result<()> {
+    fn verifies_complete_lossless_world_capture() -> anyhow::Result<()> {
         let path = temp_log("verified");
-        let mut rows = QUEST_PACKET_SPECS
+        let rows = WORLD_PACKET_SPECS
             .into_iter()
+            .filter(|spec| spec.header != 0x009b)
             .map(schema_row)
-            .collect::<Vec<_>>();
-        rows.push(serde_json::json!({
-            "kind": "quest_packet",
-            "session_id": 7,
-            "header": 0x49,
-            "raw_hex": ""
-        }));
-        rows.push(serde_json::json!({
-            "kind": "capture_health",
-            "session_id": 7,
-            "quest_dropped_on_lock": 0,
-            "quest_dropped_on_capacity": 0,
-            "quest_write_failures": 0
-        }));
+            .chain([
+                serde_json::json!({
+                    "kind": "world_packet",
+                    "session_id": 7,
+                    "capture_seq": 1,
+                    "header": 0x49,
+                    "raw_hex": ""
+                }),
+                serde_json::json!({
+                    "kind": "capture_health",
+                    "session_id": 7,
+                    "capture_format_version": CAPTURE_FORMAT_VERSION,
+                    "world_dropped_on_lock": 0,
+                    "world_dropped_on_capacity": 0,
+                    "world_write_failures": 0
+                }),
+            ]);
         fs::write(
             &path,
             rows.into_iter()
@@ -482,7 +557,7 @@ mod tests {
                 .join("\n"),
         )?;
 
-        let report = analyze_capture(&path, CaptureDomain::Quest)?;
+        let report = analyze_capture(&path, CaptureDomain::World)?;
         report.ensure_verified(&path)?;
         let manifest = CaptureManifest::new(BTreeMap::from([("quests".to_string(), report)]));
         let first = serde_json::to_vec_pretty(&manifest)?;
@@ -499,18 +574,18 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "{\"kind\":\"quest_packet\",\"session_id\":9,\"header\":73,\"raw_hex\":\"\"}\n",
-                "{\"kind\":\"capture_health\",\"session_id\":9,\"quest_dropped_on_capacity\":2}"
+                "{\"kind\":\"world_packet\",\"session_id\":9,\"capture_seq\":1,\"header\":73,\"raw_hex\":\"\"}\n",
+                "{\"kind\":\"capture_health\",\"session_id\":9,\"capture_format_version\":5,\"world_dropped_on_capacity\":2}"
             ),
         )?;
 
-        let report = analyze_capture(&path, CaptureDomain::Quest)?;
+        let report = analyze_capture(&path, CaptureDomain::World)?;
         let error = report
             .ensure_verified(&path)
             .expect_err("lossy capture must fail");
         let message = format!("{error:#}");
         assert!(message.contains("dropped 2 records"));
-        assert!(message.contains("missing quest schema"));
+        assert!(message.contains("missing world packet schema"));
         fs::remove_file(path)?;
         Ok(())
     }
@@ -522,7 +597,7 @@ mod tests {
             &path,
             concat!(
                 "{\"kind\":\"decoded_item\",\"session_id\":11,\"model_id\":32,\"model_file_id\":222}\n",
-                "{\"kind\":\"capture_health\",\"session_id\":11,\"general_write_failures\":1}"
+                "{\"kind\":\"capture_health\",\"session_id\":11,\"capture_format_version\":5,\"general_write_failures\":1}"
             ),
         )?;
 
@@ -531,6 +606,26 @@ mod tests {
             .ensure_verified(&path)
             .expect_err("general capture write failure must fail");
         assert!(format!("{error:#}").contains("recorded 1 write failures"));
+        fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_obsolete_capture_format() -> anyhow::Result<()> {
+        let path = temp_log("obsolete-format");
+        fs::write(
+            &path,
+            concat!(
+                "{\"kind\":\"decoded_item\",\"session_id\":12,\"model_id\":32,\"model_file_id\":222}\n",
+                "{\"kind\":\"capture_health\",\"session_id\":12,\"capture_format_version\":3}"
+            ),
+        )?;
+
+        let report = analyze_capture(&path, CaptureDomain::General)?;
+        let error = report
+            .ensure_verified(&path)
+            .expect_err("obsolete capture format must fail");
+        assert!(format!("{error:#}").contains("expected version 5"));
         fs::remove_file(path)?;
         Ok(())
     }

@@ -29,7 +29,7 @@ Each block carries Huffman symbol counts and code-length runs. Format-specific f
 
 ## 3. ATEX and ATTX
 
-ATEX and ATTX wrap DXT/BC block data. The payload is 32-bit aligned and begins with:
+ATEX and ATTX wrap DXT/BC block data. Their encoded image range is word-oriented and begins with:
 
 | Offset | Type | Meaning |
 |---:|---|---|
@@ -53,9 +53,10 @@ The supported FourCC families and their final block decoders are:
 |---|---|---:|
 | `DXT1` | DXT1 / BC1 | 8 |
 | `DXT2`, `DXT3`, `DXTN` | DXT3 / BC2 | 16 |
-| `DXT4`, `DXT5`, `DXTA`, `DXTL` | DXT5 / BC3 | 16 |
+| `DXT4`, `DXT5`, `DXTL` | DXT5 / BC3 | 16 |
+| `DXTA` | DXT5-alpha / BC4, exported as opaque greyscale | 8 |
 
-`DXTL` uses the DXT5-family path with premultiplied color channels.
+`DXTL` uses the DXT5-family path with premultiplied color channels. `DXTA` has no color plane: its single interpolated channel is copied to RGB and exported with opaque alpha. An `ATTX` MFT payload can contain non-word trailing container bytes after the encoded image; only the declared image data and complete tail words participate in decoding.
 
 ## 4. Planar ATEX layout
 
@@ -67,7 +68,7 @@ color-endpoint words for undecoded blocks
 color-index words for undecoded blocks
 ```
 
-The planes are interleaved into block order before DXT/BC decoding. For alpha-bearing formats, each completed 16-byte block contains two alpha words, one color-endpoint word, and one color-index word. A DXT1 block contains one color-endpoint word and one color-index word.
+For alpha-bearing color formats, each completed 16-byte block contains two alpha words, one color-endpoint word, and one color-index word. A DXT1 block contains one color-endpoint word and one color-index word. A DXTA block contains only two alpha words.
 
 A subcode bitfield of `0` means that no subcode fills blocks. The remaining payload is still planar and is interleaved by the same rules.
 
@@ -81,6 +82,7 @@ The field at `0x10` is a bitfield:
 | `0x2` | `DXT2`, `DXT3`, `DXTN` | Subcode 3 fills DXT3-family alpha blocks. |
 | `0x4` | `DXT4`, `DXT5`, `DXTA`, `DXTL` | Subcode 4 fills DXT5-family alpha blocks. |
 | `0x8` | All supported families | Subcode 5 fills color endpoint/index blocks. |
+| `0x10` | 256×256 DXT3-family textures | Subcodes 1 and 7 reserve and unswizzle the two outer block rows and columns. |
 
 The subcodes mark the block components they fill. Planar tail words fill the unmarked alpha and color components. The completed interleaved blocks are then decoded with the family mapping above.
 
@@ -104,4 +106,4 @@ The required header fields are:
 | `0x64` | `u32` | Blue mask. |
 | `0x68` | `u32` | Alpha mask. |
 
-FourCC values `DXT1`, `DXT3`, and `DXT5` use the corresponding block decoders. A zero FourCC with the RGB pixel-format flag (`0x40`) uses the declared channel masks; the confirmed uncompressed bit depths are 16 through 32 bits.
+FourCC values `DXT1`, `DXT3`, and `DXT5` use the corresponding block decoders. A zero FourCC with the RGB pixel-format flag (`0x40`) uses the declared channel masks; the confirmed uncompressed bit depths are 16 through 32 bits. The observed two-channel 16-bit bump-map form uses flag `0x80000` and masks `0x00ff` / `0xff00`.

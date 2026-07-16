@@ -20,10 +20,16 @@ pub(super) struct RuntimeItemObservation {
 pub(crate) struct RuntimeTextLookup {
     pub(crate) by_text_id: BTreeMap<u32, BTreeMap<String, String>>,
     pub(crate) by_model_file_id: BTreeMap<u32, BTreeMap<String, String>>,
+    pub(crate) exact_text_ids: BTreeSet<u32>,
 }
 
 impl RuntimeTextLookup {
     fn name_fields_for(&self, observation: &RuntimeItemObservation) -> BTreeMap<String, String> {
+        if let Some(names) = self.exact_name_fields_for_encoded(observation.enc_name_hex.as_deref())
+            && !names.is_empty()
+        {
+            return self.with_model_file_names(observation, names);
+        }
         if let Some(names) =
             decode_encoded_name_fields(observation.enc_name_hex.as_deref(), &self.by_text_id)
             && !names.is_empty()
@@ -53,6 +59,17 @@ impl RuntimeTextLookup {
         } else {
             names
         }
+    }
+
+    fn exact_name_fields_for_encoded(
+        &self,
+        enc_name_hex: Option<&str>,
+    ) -> Option<BTreeMap<String, String>> {
+        let ids = asyncdecode_item_ids_from_hex(enc_name_hex?)?;
+        if ids.is_empty() || ids.iter().any(|id| !self.exact_text_ids.contains(id)) {
+            return None;
+        }
+        decode_name_fields_from_exact_ids(&ids, &self.by_text_id)
     }
 
     fn model_file_name_fields_for(
@@ -152,6 +169,8 @@ pub(super) struct RuntimeDetectedItem {
     interaction: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_description_available: Option<bool>,
     #[serde(flatten)]
     strings: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -175,6 +194,8 @@ pub(super) struct RuntimeDetectedItemVariant {
     interaction: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_description_available: Option<bool>,
     #[serde(flatten)]
     strings: BTreeMap<String, String>,
 }
@@ -196,6 +217,7 @@ pub(super) fn aggregate_runtime_item(
             materials: variant.materials,
             interaction: variant.interaction,
             price: variant.price,
+            runtime_description_available: variant.runtime_description_available,
             strings: variant.strings,
             observed_variants: Vec::new(),
         };
@@ -220,6 +242,10 @@ pub(super) fn aggregate_runtime_item(
             );
             if score > best_score { index } else { best }
         });
+    let runtime_description_available = variants
+        .iter()
+        .filter_map(|variant| variant.runtime_description_available)
+        .reduce(|available, next| available || next);
     let best = &variants[best_index];
     RuntimeDetectedItem {
         model_id,
@@ -231,6 +257,7 @@ pub(super) fn aggregate_runtime_item(
         materials: best.materials,
         interaction: best.interaction,
         price: best.price,
+        runtime_description_available,
         strings: best.strings.clone(),
         observed_variants: variants,
     }
@@ -269,6 +296,7 @@ pub(crate) fn export_detected_items_from_packet_log_with_client_strings(
     let mut decoded_ids_by_encoded_hex = BTreeMap::<String, Vec<u32>>::new();
     let mut runtime_desc_hex_by_item = BTreeMap::<RuntimeItemKey, String>::new();
     let mut runtime_name_hex_by_item = BTreeMap::<RuntimeItemKey, String>::new();
+    let mut runtime_desc_availability_by_item = BTreeMap::<RuntimeItemKey, bool>::new();
 
     for_each_packet_log_row(packet_log_path, |row| {
         match row.get("kind").and_then(|kind| kind.as_str()) {
@@ -316,6 +344,21 @@ pub(crate) fn export_detected_items_from_packet_log_with_client_strings(
                     &["complete_name_enc_hex"],
                     &mut runtime_name_hex_by_item,
                 );
+                if let Some(key) = runtime_item_key(&row) {
+                    let available = row
+                        .get("desc_complete")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or_else(|| {
+                            row.get("desc_enc_hex")
+                                .or_else(|| row.get("description_enc_hex"))
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|hex| !hex.is_empty())
+                        });
+                    runtime_desc_availability_by_item
+                        .entry(key)
+                        .and_modify(|current| *current |= available)
+                        .or_insert(available);
+                }
                 insert_decoded_ids_by_encoded_hex(&mut decoded_ids_by_encoded_hex, &row);
                 return;
             }
@@ -350,6 +393,19 @@ pub(crate) fn export_detected_items_from_packet_log_with_client_strings(
 
     let mut items_by_model = BTreeMap::<(u32, u32), Vec<RuntimeDetectedItemVariant>>::new();
     for (observation, item_ids) in observations {
+        let runtime_description_available = item_ids
+            .iter()
+            .filter_map(|item_id| {
+                runtime_desc_availability_by_item
+                    .get(&(
+                        *item_id,
+                        Some(observation.model_id),
+                        Some(observation.model_file_id),
+                    ))
+                    .or_else(|| runtime_desc_availability_by_item.get(&(*item_id, None, None)))
+            })
+            .copied()
+            .reduce(|available, next| available || next);
         let variant = RuntimeDetectedItemVariant {
             item_ids: item_ids.iter().copied().collect(),
             name_id: observation.name_id,
@@ -358,6 +414,7 @@ pub(crate) fn export_detected_items_from_packet_log_with_client_strings(
             materials: observation.materials,
             interaction: observation.interaction,
             price: observation.price,
+            runtime_description_available,
             strings: {
                 let runtime_name_hex = item_ids.iter().find_map(|item_id| {
                     runtime_name_hex_by_item
@@ -385,6 +442,10 @@ pub(crate) fn export_detected_items_from_packet_log_with_client_strings(
                                 .and_then(|ids| {
                                     decode_name_fields_from_exact_ids(ids, &name_lookup.by_text_id)
                                 })
+                        })
+                        .or_else(|| {
+                            name_lookup
+                                .exact_name_fields_for_encoded(runtime_name_hex.map(String::as_str))
                         })
                         .or_else(|| {
                             decode_encoded_name_fields(

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 #[command(name = "gwdb-extractor")]
 #[command(about = "Guild Wars client extraction helpers")]
 pub(crate) struct Cli {
-    /// Root directory receiving skills/, items/, and quests/.
-    #[arg(long, global = true, default_value = ".")]
+    /// Root directory receiving extraction outputs.
+    #[arg(long, global = true, default_value = "output")]
     pub(crate) out_dir: PathBuf,
     #[command(subcommand)]
     pub(crate) command: Command,
@@ -42,29 +42,43 @@ pub(crate) enum ExtractCommand {
         #[arg(long)]
         snapshot: PathBuf,
     },
+    Images {
+        #[arg(long)]
+        snapshot: PathBuf,
+    },
     Items {
         #[arg(long)]
         snapshot: PathBuf,
+        /// Repeat to merge immutable capture sessions or domain streams.
         #[arg(long)]
-        packet_log: Option<PathBuf>,
+        packet_log: Vec<PathBuf>,
         #[arg(long, requires = "packet_log")]
         skip_icons: bool,
         #[arg(long, requires = "packet_log")]
         use_client_strings: bool,
-        /// Accept legacy captures without verified health metadata.
-        #[arg(long, requires = "packet_log")]
-        allow_unverified_capture: bool,
     },
     Quests {
         #[arg(long)]
         snapshot: PathBuf,
-        #[arg(long)]
-        packet_log: PathBuf,
+        /// Repeat to merge immutable capture sessions or domain streams.
+        #[arg(long, required = true)]
+        packet_log: Vec<PathBuf>,
         /// Compact ItemGeneral capture used to resolve reward item model IDs.
         #[arg(long)]
-        item_log: Option<PathBuf>,
-        /// Accept legacy captures without verified health/schema metadata.
+        item_log: Vec<PathBuf>,
+    },
+    Npcs {
         #[arg(long)]
-        allow_unverified_capture: bool,
+        snapshot: PathBuf,
+        /// Repeat to merge immutable capture sessions or domain streams.
+        #[arg(long, required = true)]
+        packet_log: Vec<PathBuf>,
+    },
+    Vendors {
+        #[arg(long)]
+        snapshot: PathBuf,
+        /// Repeat to merge immutable capture sessions or domain streams.
+        #[arg(long, required = true)]
+        packet_log: Vec<PathBuf>,
     },
 }

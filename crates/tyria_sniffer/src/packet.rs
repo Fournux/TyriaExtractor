@@ -93,11 +93,11 @@ pub(crate) fn write_u16_hex(out: &mut impl Write, words: &[u16]) -> io::Result<(
     Ok(())
 }
 
-fn write_item_general_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
+fn write_item_common_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
     let model_file_id_raw = u32_at(data, 8);
     write!(
         out,
-        "{{\"item_id\":{},\"model_file_id\":{},\"model_file_id_raw\":{},\"item_type\":{},\"unk1\":{},\"extra_id\":{},\"materials\":{},\"unk2\":{},\"interaction\":{},\"price\":{},\"model_id\":{},\"quantity\":{}",
+        "{{\"item_id\":{},\"model_file_id\":{},\"model_file_id_raw\":{},\"item_type\":{},\"unk1\":{},\"extra_id\":{},\"materials\":{},\"unk2\":{},\"interaction\":{},\"price\":{}",
         u32_at(data, 4),
         model_file_id_raw & 0x7FFF_FFFF,
         model_file_id_raw,
@@ -107,7 +107,15 @@ fn write_item_general_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<(
         u32_at(data, 24),
         u32_at(data, 28),
         u32_at(data, 32),
-        u32_at(data, 36),
+        u32_at(data, 36)
+    )
+}
+
+fn write_item_general_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
+    write_item_common_decoded(out, data)?;
+    write!(
+        out,
+        ",\"model_id\":{},\"quantity\":{}",
         u32_at(data, 40),
         u32_at(data, 44)
     )?;
@@ -134,49 +142,9 @@ fn write_item_general_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<(
     write!(out, "}}")
 }
 
-#[cfg(all(windows, target_arch = "x86"))]
-pub(crate) fn write_compact_item(out: &mut impl Write, data: &[u8]) -> io::Result<bool> {
-    if !matches!(u32_at(data, 0), 0x0161 | 0x0162) {
-        return Ok(false);
-    }
-    let model_file_id = u32_at(data, 8) & 0x7fff_ffff;
-    write!(
-        out,
-        "{{\"model_id\":{},\"model_file_id\":{},\"item_type\":{},\"materials\":{}",
-        u32_at(data, 40),
-        model_file_id,
-        u32_at(data, 12),
-        u32_at(data, 24),
-    )?;
-    if let Some(name_text_id) = encoded_u32_at(data, ITEM_GENERAL_NAME_START) {
-        write!(
-            out,
-            ",\"name_text_id\":{},\"enc_name_hex\":\"",
-            name_text_id
-        )?;
-        write_hex(out, encoded_name_bytes(data, ITEM_GENERAL_NAME_START))?;
-        write!(out, "\"")?;
-    }
-    write!(out, "}}")?;
-    Ok(true)
-}
-
 fn write_unnamed_item_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<()> {
-    let model_file_id_raw = u32_at(data, 8);
-    write!(
-        out,
-        "{{\"item_id\":{},\"model_file_id\":{},\"model_file_id_raw\":{},\"item_type\":{},\"unk1\":{},\"extra_id\":{},\"materials\":{},\"unk2\":{},\"interaction\":{},\"price\":{}}}",
-        u32_at(data, 4),
-        model_file_id_raw & 0x7FFF_FFFF,
-        model_file_id_raw,
-        u32_at(data, 12),
-        u32_at(data, 16),
-        u32_at(data, 20),
-        u32_at(data, 24),
-        u32_at(data, 28),
-        u32_at(data, 32),
-        u32_at(data, 36)
-    )
+    write_item_common_decoded(out, data)?;
+    write!(out, "}}")
 }
 
 fn write_npc_properties_decoded(out: &mut impl Write, data: &[u8]) -> io::Result<()> {

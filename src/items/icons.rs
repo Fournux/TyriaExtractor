@@ -193,12 +193,6 @@ pub(crate) fn export_model_file_icons(
             continue;
         };
 
-        let base_hashes = archive
-            .hashes_by_mft()
-            .get(&base_entry.index)
-            .cloned()
-            .unwrap_or_default();
-
         let Some(candidate) =
             model_file_icon_candidate_for_base(&base_entry, include_direct, archive.entries())
         else {
@@ -214,15 +208,21 @@ pub(crate) fn export_model_file_icons(
         let stream_id = candidate.stream_id;
         let image_entry = *candidate.image_entry;
 
-        let image_hashes = archive
-            .hashes_by_mft()
-            .get(&image_entry.index)
-            .cloned()
-            .unwrap_or_default();
         let result = archive
             .read_entry(image_entry.index)
-            .with_context(|| format!("reading {source} MFT entry {}", image_entry.index))
-            .and_then(|bytes| {
+            .with_context(|| format!("reading {source} MFT entry {}", image_entry.index));
+        let result = match result {
+            Ok(bytes) => {
+                let base_hashes = archive
+                    .hashes_by_mft()
+                    .get(&base_entry.index)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let image_hashes = archive
+                    .hashes_by_mft()
+                    .get(&image_entry.index)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
                 export_model_file_icon_payload(
                     ModelFileIconPayloadContext {
                         model_file_id,
@@ -230,13 +230,15 @@ pub(crate) fn export_model_file_icons(
                         stream_id,
                         base_entry: &base_entry,
                         image_entry: &image_entry,
-                        base_hashes: &base_hashes,
-                        image_hashes: &image_hashes,
+                        base_hashes,
+                        image_hashes,
                         out_dir,
                     },
                     &bytes,
                 )
-            });
+            }
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok(Some(value)) => {

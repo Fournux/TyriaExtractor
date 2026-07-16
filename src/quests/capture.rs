@@ -126,20 +126,10 @@ pub(super) fn read_quest_accumulators(path: &Path) -> Result<BTreeMap<u32, Quest
             current_maps.remove(&session_id);
             continue;
         }
-        if kind == Some("quest_snapshot") {
-            let row: QuestSnapshotRow = serde_json::from_value(value)
-                .with_context(|| format!("decoding {} line {}", path.display(), line_index + 1))?;
-            let quest_id = row.quest_id;
-            quests
-                .entry(quest_id)
-                .or_insert_with(|| QuestAccumulator::new(&row))
-                .observe(row);
+        if kind != Some("world_packet") {
             continue;
         }
-        if kind != Some("quest_packet") {
-            continue;
-        }
-        let packet: QuestPacketRow = serde_json::from_value(value)
+        let packet: WorldPacketRow = serde_json::from_value(value)
             .with_context(|| format!("decoding {} line {}", path.display(), line_index + 1))?;
         if let Some(row) = parse_quest_packet(&packet).with_context(|| {
             format!(
@@ -150,10 +140,13 @@ pub(super) fn read_quest_accumulators(path: &Path) -> Result<BTreeMap<u32, Quest
             )
         })? {
             let quest_id = row.quest_id;
-            quests
+            let quest = quests
                 .entry(quest_id)
-                .or_insert_with(|| QuestAccumulator::new(&row))
-                .observe(row);
+                .or_insert_with(|| QuestAccumulator::new(&row));
+            quest.observe(row);
+            if packet.header == 0x4c {
+                quest.description_observed = true;
+            }
         }
         match packet.header {
             0x20 => {

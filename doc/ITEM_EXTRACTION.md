@@ -113,6 +113,13 @@ The single-word controls excluded by that rule are:
 This classifier reproduces the client-emitted text-reference sequences for the
 item EncStrings used to establish it. Its explicit scope is why it is not a
 general `AsyncDecodeStr` grammar.
+A runtime observation at the client decoder boundary can record the exact text
+reference IDs requested for each item EncString. Prefer that client-emitted
+sequence when available; the bounded classifier above remains a fallback for
+EncStrings not observed at the decoder boundary.
+A direct single-reference result from that fallback is accepted only when the
+localized DAT resolver successfully resolved the captured text ID; an arbitrary
+same-numbered local record is not sufficient provenance.
 
 For a name in that verified item subset, the first emitted text reference
 selects the base name or name template. Later emitted text references supply
@@ -160,9 +167,10 @@ semantics. If those values are absent, DAT plus the EncString recovers only the
 localized template; replacing an unresolved numeric placeholder with a guessed
 number would be incorrect.
 
-Absence of `info_string` is a runtime-evidence gap, not evidence that a
-description lookup failed in the DAT. Conversely, a localized text record alone
-does not establish that it belongs to an item.
+A runtime observation must distinguish a null `info_string` pointer from an
+available EncString. A captured null pointer proves that the observed runtime
+item exposed no description; it is not a failed DAT lookup. A localized text
+record alone still does not establish that it belongs to an item.
 
 ## Inventory icons
 

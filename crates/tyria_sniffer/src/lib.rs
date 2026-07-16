@@ -1,4 +1,8 @@
 #![allow(clippy::missing_safety_doc)]
+#![allow(
+    linker_messages,
+    reason = "MSVC reports expected import-library creation on linker stdout"
+)]
 
 #[cfg(any(test, all(windows, target_arch = "x86")))]
 mod packet;

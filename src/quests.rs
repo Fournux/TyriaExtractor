@@ -18,9 +18,10 @@ use std::{
 use crate::{
     io_util::write_json,
     text::{
-        TextReference, apply_encoded_template,
+        TextReference,
         catalog::{LocalizedTextCatalog, resolve_localized_text_catalog},
-        encoded_values_from_words, encoded_words_from_hex, text_references,
+        encoded_values_from_words, encoded_words_from_hex, for_each_localized_reference,
+        text_references,
     },
 };
 
@@ -158,6 +159,7 @@ struct QuestAccumulator {
     steps: BTreeSet<StepObservation>,
     step_sequences: BTreeSet<Vec<StepObservation>>,
     dialogs: BTreeMap<QuestDialogKey, QuestDialogAccumulator>,
+    description_observed: bool,
     reward_completions: BTreeSet<CapturePoint>,
 }
 
@@ -173,6 +175,7 @@ impl QuestAccumulator {
             steps: BTreeSet::new(),
             step_sequences: BTreeSet::new(),
             dialogs: BTreeMap::new(),
+            description_observed: false,
             reward_completions: BTreeSet::new(),
         }
     }
@@ -235,6 +238,7 @@ pub(crate) fn extract_quests_from_packet_log(
             packet_log_path.display()
         );
     }
+    ensure_descriptions_complete(&quests)?;
 
     let (text_ids, seeds) = collect_text_inputs(quests.values());
     let lookup = resolve_localized_text_catalog(
@@ -255,6 +259,19 @@ pub(crate) fn extract_quests_from_packet_log(
         .map(|(quest_id, quest)| build_catalog_entry(quest_id, quest, &lookup, &reward_item_models))
         .collect::<Vec<_>>();
     write_json(out_path, &catalog)
+}
+
+fn ensure_descriptions_complete(quests: &BTreeMap<u32, QuestAccumulator>) -> Result<()> {
+    let missing = quests
+        .iter()
+        .filter_map(|(quest_id, quest)| (!quest.description_observed).then_some(*quest_id))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "quest capture is incomplete: missing QUEST_DESCRIPTION (0x004C) for IDs {missing:?}"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

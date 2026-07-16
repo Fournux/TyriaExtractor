@@ -12,16 +12,16 @@ fn parses_content_reference() {
 }
 
 #[test]
-fn decodes_legacy_snapshot_hex_once_at_input_boundary() {
-    let row: QuestSnapshotRow = serde_json::from_value(serde_json::json!({
-        "quest_id": 0x389,
-        "location_enc_hex": "0181db765be28fc50f2a"
-    }))
-    .unwrap();
-    assert_eq!(
-        row.location_encoded.as_deref().map(words_to_hex).as_deref(),
-        Some("0181db765be28fc50f2a")
-    );
+fn incomplete_quest_capture_is_rejected() {
+    let row = partial_quest_row(905);
+    let mut quests = BTreeMap::from([(905, QuestAccumulator::new(&row))]);
+
+    let error = ensure_descriptions_complete(&quests).unwrap_err();
+
+    assert!(error.to_string().contains("QUEST_DESCRIPTION"));
+    assert!(error.to_string().contains("905"));
+    quests.get_mut(&905).unwrap().description_observed = true;
+    ensure_descriptions_complete(&quests).unwrap();
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn decodes_quest_add_from_direct_client_packet() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
 
-    let packet = QuestPacketRow {
+    let packet = WorldPacketRow {
         ts_ms: 99,
         session_id: 7,
         header: 0x49,
@@ -394,7 +394,7 @@ fn links_quest_dialog_to_stable_npc_model() {
     let packet = |ts_ms: u128, header: u32, bytes: &[u8]| {
         serde_json::json!({
             "ts_ms": ts_ms,
-            "kind": "quest_packet",
+            "kind": "world_packet",
             "header": header,
             "raw_hex": bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         })
@@ -478,7 +478,7 @@ fn links_quest_dialog_to_stable_npc_model() {
             ts_ms: 8,
         }])
     );
-    let decline = parse_dialog_button_packet(&QuestPacketRow {
+    let decline = parse_dialog_button_packet(&WorldPacketRow {
         ts_ms: 5,
         session_id: 0,
         header: 0x7e,
@@ -494,7 +494,7 @@ fn links_quest_dialog_to_stable_npc_model() {
     assert_eq!(dialog_role(decline.1), None);
     let mut high_quest_button = button;
     put_u32(&mut high_quest_button, 264, (0x1389 << 8) | 0x0080_0003);
-    let high_quest = parse_dialog_button_packet(&QuestPacketRow {
+    let high_quest = parse_dialog_button_packet(&WorldPacketRow {
         ts_ms: 6,
         session_id: 0,
         header: 0x7e,
@@ -510,7 +510,7 @@ fn links_quest_dialog_to_stable_npc_model() {
 
 #[test]
 fn decodes_consumer_relevant_quest_packet_families() {
-    let packet = |header: u32, bytes: &[u8]| QuestPacketRow {
+    let packet = |header: u32, bytes: &[u8]| WorldPacketRow {
         ts_ms: 123,
         session_id: 0,
         header,

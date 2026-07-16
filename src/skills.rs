@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 pub(crate) use extraction::extract_skills_to_model_file_dirs;
 
+const SKILL_FLAG_OVERCAST: u32 = 0x0000_0001;
 const SKILL_FLAG_PVE: u32 = 0x0008_0000;
 const SKILL_FLAG_PVP: u32 = 0x0040_0000;
 const SKILL_FLAG_NOT_PLAYABLE: u32 = 0x0200_0000;
@@ -83,12 +84,13 @@ struct OutputManifest {
     skills: Vec<ExtractedSkill>,
 }
 const SKILL_OUTPUT_SCHEMA_VERSION: u32 = 1;
+const EXPECTED_SKILL_TOTAL: usize = 1488;
 const EXPECTED_SKILL_DISTRIBUTION: [(&str, usize, usize); 5] = [
-    ("core", 212, 40),
-    ("prophecies", 154, 60),
-    ("factions", 260, 90),
-    ("nightfall", 253, 110),
-    ("eye_of_the_north", 147, 3),
+    ("core", 233, 48),
+    ("prophecies", 159, 70),
+    ("factions", 292, 104),
+    ("nightfall", 294, 125),
+    ("eye_of_the_north", 160, 3),
 ];
 
 fn validate_skill_distribution(
@@ -107,8 +109,8 @@ fn validate_skill_distribution(
             );
         }
     }
-    if total != 1329 {
-        anyhow::bail!("skill catalog contains {total} skills instead of 1329");
+    if total != EXPECTED_SKILL_TOTAL {
+        anyhow::bail!("skill catalog contains {total} skills instead of {EXPECTED_SKILL_TOTAL}");
     }
     Ok(())
 }
@@ -118,6 +120,14 @@ fn decoded_energy_cost(encoded: u8) -> u32 {
         11 => 15,
         12 => 25,
         other => other as u32,
+    }
+}
+
+fn overcast_cost(special_flags: u32, raw: u8) -> u8 {
+    if special_flags & SKILL_FLAG_OVERCAST != 0 {
+        raw
+    } else {
+        0
     }
 }
 
@@ -186,7 +196,7 @@ mod tests {
                 )
             })
             .collect();
-        validate_skill_distribution(&campaigns, 1329).unwrap();
+        validate_skill_distribution(&campaigns, EXPECTED_SKILL_TOTAL).unwrap();
     }
 
     #[test]
@@ -202,5 +212,11 @@ mod tests {
         let error = validate_skill_distribution(&campaigns, 251)
             .expect_err("incomplete skill catalog must fail");
         assert!(format!("{error:#}").contains("core skill distribution"));
+    }
+
+    #[test]
+    fn only_reports_overcast_when_its_special_flag_is_set() {
+        assert_eq!(overcast_cost(SKILL_FLAG_PVE, 99), 0);
+        assert_eq!(overcast_cost(SKILL_FLAG_OVERCAST | SKILL_FLAG_PVE, 10), 10);
     }
 }

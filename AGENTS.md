@@ -52,16 +52,22 @@ For skills this includes, at minimum:
 
 ## 6. Current Skills Validation Milestone
 
-The skills pipeline is valid only when its campaign distribution matches:
+The skills pipeline is valid only when the current template corpus contains
+1,333 non-PvP IDs plus 155 current PvP variants and its campaign distribution
+matches:
 
 | Campaign | Non-Elite | Elite | Total |
 | --- | ---: | ---: | ---: |
-| Core | 212 | 40 | 252 |
-| Prophecies | 154 | 60 | 214 |
-| Factions | 260 | 90 | 350 |
-| Nightfall | 253 | 110 | 363 |
-| Eye of the North | 147 | 3 | 150 |
-| **Grand Total** | **1026** | **303** | **1329** |
+| Core | 233 | 48 | 281 |
+| Prophecies | 159 | 70 | 229 |
+| Factions | 292 | 104 | 396 |
+| Nightfall | 294 | 125 | 419 |
+| Eye of the North | 160 | 3 | 163 |
+| **Grand Total** | **1138** | **350** | **1488** |
+
+Select non-PvP equip/use-family `1` rows directly. Add a PvP equip/use-family
+`0` row only when its ID and a selected base row's linked ID at `0x2c` point
+to each other. Keep every selected ID distinct regardless of duplicate names.
 
 ## 7. Workflow
 

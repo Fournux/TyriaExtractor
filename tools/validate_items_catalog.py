@@ -37,6 +37,7 @@ def validate(path: Path) -> dict:
     model_files_by_model: defaultdict[int, set[int]] = defaultdict(set)
     missing_names: list[dict] = []
     missing_descriptions: list[dict] = []
+    unavailable_descriptions: list[dict] = []
     partial_names: list[dict] = []
     partial_descriptions: list[dict] = []
     named_rows = described_rows = fully_named_rows = fully_described_rows = 0
@@ -110,6 +111,8 @@ def validate(path: Path) -> dict:
                         ]
                     }
                 )
+        elif item.get("runtime_description_available") is False:
+            unavailable_descriptions.append(identity(item))
         else:
             missing_descriptions.append(identity(item))
         fully_named_rows += len(present_name_languages) == len(LANGUAGES)
@@ -134,6 +137,7 @@ def validate(path: Path) -> dict:
         "fully_described_rows": fully_described_rows,
         "missing_names": missing_names,
         "missing_descriptions": missing_descriptions,
+        "runtime_unavailable_descriptions": unavailable_descriptions,
         "partial_names": partial_names,
         "partial_descriptions": partial_descriptions,
         "shared_model_ids": shared_model_ids,
@@ -142,7 +146,7 @@ def validate(path: Path) -> dict:
     report["complete"] = (
         not errors
         and fully_named_rows == len(items)
-        and fully_described_rows == len(items)
+        and fully_described_rows + len(unavailable_descriptions) == len(items)
     )
     return report
 

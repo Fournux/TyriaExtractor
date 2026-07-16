@@ -39,7 +39,7 @@ addresses the row as `table_base + skill_id * 0xa4`.
 | `0x30` | `u8` | Combo code. |
 | `0x31` | `u8` | Target code. |
 | `0x33` | `u8` | Equip/use-family code. |
-| `0x34` | `u8` | Overcast cost. |
+| `0x34` | `u8` | Raw overcast cost; valid only when flag `0x00000001` is set, otherwise ignored. |
 | `0x35` | `u8` | Encoded energy cost: `11` means 15 energy, `12` means 25, and other values are literal. |
 | `0x36` | `u8` | Health cost. |
 | `0x38` | `u32` | Adrenaline cost. |
@@ -65,6 +65,7 @@ Confirmed flag bits at `0x10` are:
 
 | Mask | Meaning |
 |---:|---|
+| `0x00000001` | The overcast-cost byte at `0x34` is valid. |
 | `0x00000002` | Touch range. |
 | `0x00000004` | Elite. |
 | `0x00000008` | Half range. |
@@ -72,6 +73,7 @@ Confirmed flag bits at `0x10` are:
 | `0x00020000` | Non-stacking. |
 | `0x00080000` | PvE-only. |
 | `0x00400000` | PvP-only. |
+| `0x02000000` | Not playable. |
 
 ## 3. Localized strings
 
@@ -86,37 +88,42 @@ For a selected language, `language_file_array[file_index]` supplies the text res
 
 The concise and full description ids are independent references to separately authored text records. Both use the same language lookup and text-record format. Concise/full formatting is therefore a content boundary, not a different binary encoding: decode the selected record and its text markup as specified in [GWDAT_FORMAT.md](GWDAT_FORMAT.md), and do not derive either description from the other.
 
-## 4. Player-skill boundary
+## 4. Skill template corpus boundary
 
-The table is broader than the set of skills a player can equip: it is also used
-for weapon modifiers and other non-player definitions. A nonzero name id or a
-recognized skill type therefore does not establish that a row is a player
-skill.
+The table is broader than the template corpus: it is also used for weapon
+modifiers and other non-player definitions. A nonzero name id or a recognized
+skill type therefore does not establish membership.
 
-The locally validated PvP and PvE flags are independent properties,
-identified by `0x00400000` and `0x00080000` respectively. Neither flag alone
-establishes membership in the player-skill corpus. Selecting the confirmed
-non-PvP corpus requires the PvP bit to be clear in addition to the content
-constraints below.
+The current catalog supports both non-PvP template IDs and current PvP/Codex
+variant IDs:
 
-### Confirmed PvE corpus boundary
+1. Select every row whose equip/use-family is `1` and whose PvP flag
+   `0x00400000` is clear. This yields 1,333 IDs. Profession `0` is valid at
+   this boundary, including `2`, `3`, and `1814` through `1816`.
+2. For each selected row, read the linked skill ID at `0x2c`. Add that target
+   only when it carries the PvP flag, uses equip/use-family `0`, and links back
+   to the original row through its own `0x2c` field. The reciprocal relation
+   selects 155 current variants while rejecting stale or unrelated PvP rows.
+3. Do not admit equip/use-family `2` rows. The former Nightfall text-slot
+   heuristic incorrectly selected internal IDs `829`, `833`, `861`, `868`,
+   and `940`.
 
-For the confirmed PvE player-skill corpus, the intrinsic flag tests above are
-combined with these content constraints:
+Rows `3418` through `3421` satisfy the family-`1` boundary but carry the
+client's not-playable flag `0x02000000`, profession `0`, and the localized
+name `...`. They remain distinct special rows; consumers can exclude them
+from player-facing choices through `flags.playable`.
 
-- Ordinary rows use equip/use-family `1`, a Core, Prophecies, Factions,
-  Nightfall, or Eye of the North campaign, and profession `1` through `10`.
-  Eye of the North also admits profession `0`.
-- Title-track codes `5` and `6` classify a row as Factions for this boundary.
-- A separate Nightfall group uses equip/use-family `2`, professions `1` through
-  `10`, and non-elite rows whose names use text-file slot `26`. The sentinel
-  name `REMOVE` and names already present in the ordinary group are excluded.
-
-These constraints define the confirmed corpus; they are not general meanings
-of the campaign, profession, title-track, or equip/use-family fields.
+Title-track codes `5` and `6` are reported under Factions. Selection and
+serialization are keyed by the table ID, never by localized name: the output
+contains 1,488 unique IDs and retains separate rows when names coincide.
 
 ## 5. Icons
 
 Offsets `0x8c` and `0x90` reference the standard- and high-resolution icons in the analyzed client table. Resolve each nonzero file number with the archive hash lookup rules in [GWDAT_FORMAT.md](GWDAT_FORMAT.md). The resource may be in either `Gw.dat` or `Gw.snapshot`; a snapshot can contain streamed icons absent from the base archive.
 
 After archive-level decompression, decode the resulting `ATEX` or `ATTX` texture according to [DECOMPRESSION.md](DECOMPRESSION.md). DAT decompression and texture decoding are separate stages.
+
+Associate both PNG variants with the table skill ID. A complete catalog requires
+the standard icon to resolve for every included row; the current 1,488-row
+corpus also resolves all 1,488 high-resolution file references. The table-defined
+file references eliminate any need for a per-skill icon mapping.

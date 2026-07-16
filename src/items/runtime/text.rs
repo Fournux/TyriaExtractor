@@ -361,10 +361,10 @@ pub(super) fn decode_encoded_name_fields(
 ) -> Option<BTreeMap<String, String>> {
     let hex = enc_name_hex?;
     asyncdecode_item_ids_from_hex(hex)
-        .and_then(|ids| decode_name_fields_from_ids(&ids, by_text_id))
+        .and_then(|ids| decode_text_fields_from_ids(&ids, by_text_id, "name"))
         .or_else(|| {
             let ids = encoded_name_ids_from_hex(hex)?;
-            decode_name_fields_from_ids(&ids, by_text_id)
+            decode_text_fields_from_ids(&ids, by_text_id, "name")
         })
 }
 
@@ -407,13 +407,6 @@ pub(super) fn decode_text_fields_from_exact_ids(
             .filter(|fields| !fields.is_empty());
     }
     decode_text_fields_from_ids(ids, by_text_id, prefix)
-}
-
-pub(super) fn decode_name_fields_from_ids(
-    ids: &[u32],
-    by_text_id: &BTreeMap<u32, BTreeMap<String, String>>,
-) -> Option<BTreeMap<String, String>> {
-    decode_text_fields_from_ids(ids, by_text_id, "name")
 }
 
 pub(super) fn decode_text_fields_from_ids(
@@ -706,12 +699,14 @@ pub(crate) fn runtime_item_text_lookup_with_compact_seeds(
         compact_seeds,
         decoded_records,
     )?;
+    let exact_text_ids = requested.by_text_id.keys().copied().collect();
     for (text_id, localized) in requested.by_text_id {
         by_text_id.entry(text_id).or_insert(localized);
     }
     Ok(RuntimeTextLookup {
         by_text_id,
         by_model_file_id,
+        exact_text_ids,
     })
 }
 pub(super) fn scan_model_file_simple_name_links(

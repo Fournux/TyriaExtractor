@@ -67,6 +67,19 @@ fn compact_dxt3_atex_subcode3_decodes_uniform_alpha_and_color() -> anyhow::Resul
 }
 
 #[test]
+fn attx_decoder_ignores_non_word_trailing_container_bytes() -> anyhow::Result<()> {
+    let mut attx = compact_dxt3_atex_with_subcode3_alpha(15);
+    attx[..4].copy_from_slice(b"ATTX");
+    attx.extend_from_slice(&[1, 2, 3]);
+
+    let (width, height, rgba) = crate::atex::decode_atex_rgba(&attx)?;
+
+    assert_eq!((width, height), (4, 4));
+    assert_eq!(rgba.len(), 4 * 4 * 4);
+    Ok(())
+}
+
+#[test]
 fn ffna_inline_atex_extraction_finds_embedded_texture_payload() {
     let inline_atex = compact_dxt3_atex_with_subcode3_alpha(15);
     let mut ffna = b"ffna\x01".to_vec();
@@ -84,6 +97,28 @@ fn ffna_inline_atex_extraction_finds_embedded_texture_payload() {
     assert_eq!(header.container, crate::atex::AtexContainer::Atex);
     assert_eq!(header.format.as_fourcc(), "DXT3");
     assert_eq!((header.width, header.height), (4, 4));
+}
+
+#[test]
+fn ffna_inline_atex_extraction_finds_every_embedded_texture() -> anyhow::Result<()> {
+    let first = compact_dxt3_atex_with_subcode3_alpha(7);
+    let second = compact_dxt3_atex_with_subcode3_alpha(15);
+    let mut ffna = b"ffna".to_vec();
+    let first_offset = ffna.len();
+    ffna.extend_from_slice(&first);
+    let second_offset = ffna.len();
+    ffna.extend_from_slice(&second);
+
+    let payloads = crate::icon_payload::find_inline_atex_payloads(&ffna).collect::<Vec<_>>();
+
+    assert_eq!(payloads.len(), 2);
+    assert_eq!(
+        [payloads[0].0, payloads[1].0],
+        [first_offset, second_offset]
+    );
+    crate::atex::decode_atex_rgba(payloads[0].1)?;
+    crate::atex::decode_atex_rgba(payloads[1].1)?;
+    Ok(())
 }
 
 #[test]

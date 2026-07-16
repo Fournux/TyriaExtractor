@@ -182,34 +182,9 @@ pub(super) fn append_localized_references(
     refs: &[TextReference],
     lookup: &LocalizedTextCatalog,
 ) {
-    let Some(template) = refs.first() else {
-        return;
-    };
-    let Some(template_names) = lookup.by_text_id.get(&template.id) else {
-        return;
-    };
-    for (code, template_text) in template_names {
-        let args = refs[1..]
-            .iter()
-            .map(|text_ref| {
-                lookup
-                    .by_text_id
-                    .get(&text_ref.id)
-                    .and_then(|texts| texts.get(code).or_else(|| texts.get("en")))
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .collect::<Vec<_>>();
-        let text = apply_encoded_template(template_text, &args)
-            .replace("{sc}", "")
-            .replace("{s}", "")
-            .trim_matches('%')
-            .trim()
-            .to_string();
-        if !text.is_empty() {
-            out.insert(format!("{prefix}_{code}"), text);
-        }
-    }
+    for_each_localized_reference(refs, lookup, |code, text| {
+        out.insert(format!("{prefix}_{code}"), text.to_string());
+    });
 }
 
 pub(super) fn quest_rewards(

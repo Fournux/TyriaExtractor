@@ -34,6 +34,220 @@ pub unsafe extern "C" fn gwdb_on_stoc_packet(packet: *const u8, stack_size: u32)
     push_bounded(&RING, record);
 }
 
+unsafe extern "thiscall" fn collector_create_hook(this: *mut u8, create_param_ptr: *mut *mut u8) {
+    let mut record = CollectorOfferRecord {
+        ts_ms: now_ms(),
+        session_id: capture_session_id(),
+        merchant_agent_id: LAST_VENDOR_AGENT_ID.load(Ordering::Acquire) as u32,
+        window_transaction_type: LAST_VENDOR_TRANSACTION_TYPE.load(Ordering::Acquire) as u32,
+        ..CollectorOfferRecord::default()
+    };
+    let create_param =
+        read_unaligned_at::<*const u8>(create_param_ptr.cast(), 0).unwrap_or(ptr::null());
+    let valid_create_param = !create_param.is_null() && readable(create_param, 0x24);
+    if valid_create_param {
+        record.transaction_service =
+            read_unaligned_at::<u32>(create_param.cast(), 0).unwrap_or_default();
+        record.reward_count =
+            read_unaligned_at::<u32>(create_param.cast(), 0x14).unwrap_or_default();
+        record.trophy_item_id =
+            read_unaligned_at::<u32>(create_param.cast(), 0x20).unwrap_or_default();
+        let captured = (record.reward_count as usize).min(MAX_COLLECTOR_REWARDS);
+        record.captured_reward_count = captured as u16;
+        record.rewards_truncated = record.reward_count as usize > captured;
+        if captured == 0 {
+            record.rewards_readable = true;
+        } else if let Some(rewards) = read_unaligned_at::<*const u32>(create_param.cast(), 0x18) {
+            let bytes = captured * size_of::<u32>();
+            if !rewards.is_null() && readable(rewards.cast::<u8>(), bytes) {
+                ptr::copy_nonoverlapping(rewards, record.reward_item_ids.as_mut_ptr(), captured);
+                record.rewards_readable = true;
+            }
+        }
+    }
+
+    call_original_collector_create(this, create_param_ptr);
+
+    if !valid_create_param || record.transaction_service != 2 {
+        return;
+    }
+    if readable(this, 0x14) {
+        record.required_item_quantity =
+            read_unaligned_at::<u32>(this.cast(), 0x0C).unwrap_or_default();
+        record.required_item_model_id =
+            read_unaligned_at::<u32>(this.cast(), 0x10).unwrap_or_default();
+    }
+    record.npc_model_id = resolve_vendor_npc_model(record.merchant_agent_id);
+    record.capture_seq = next_capture_seq();
+    resolve_collector_rewards(&mut record);
+    push_collector_offer(record);
+}
+
+unsafe fn call_original_collector_create(this: *mut u8, create_param_ptr: *mut *mut u8) {
+    call_original_vendor_create(&ORIGINAL_COLLECTOR_CREATE, this, create_param_ptr);
+}
+
+unsafe fn call_original_vendor_create(
+    original: &AtomicUsize,
+    this: *mut u8,
+    create_param_ptr: *mut *mut u8,
+) {
+    let original = original.load(Ordering::Acquire);
+    if original == 0 {
+        return;
+    }
+    let create: VendorCreateFn = std::mem::transmute(original);
+    create(this, create_param_ptr);
+}
+
+unsafe extern "thiscall" fn merchant_create_hook(this: *mut u8, create_param_ptr: *mut *mut u8) {
+    vendor_create_hook(&ORIGINAL_MERCHANT_CREATE, 1, this, create_param_ptr);
+}
+
+unsafe extern "thiscall" fn crafter_create_hook(this: *mut u8, create_param_ptr: *mut *mut u8) {
+    vendor_create_hook(&ORIGINAL_CRAFTER_CREATE, 3, this, create_param_ptr);
+}
+
+unsafe extern "thiscall" fn trainer_create_hook(this: *mut u8, create_param_ptr: *mut *mut u8) {
+    vendor_create_hook(&ORIGINAL_TRAINER_CREATE, 10, this, create_param_ptr);
+}
+
+unsafe fn vendor_create_hook(
+    original: &AtomicUsize,
+    expected_service: u32,
+    this: *mut u8,
+    create_param_ptr: *mut *mut u8,
+) {
+    let mut record = capture_vendor_catalog_record(expected_service, create_param_ptr);
+    call_original_vendor_create(original, this, create_param_ptr);
+    let Some(record) = record.as_mut() else {
+        return;
+    };
+    record.npc_model_id = resolve_vendor_npc_model(record.merchant_agent_id);
+    if expected_service != 10 {
+        resolve_vendor_items(record);
+    }
+    record.capture_seq = next_capture_seq();
+    push_vendor_catalog(std::mem::take(record));
+}
+
+unsafe fn capture_vendor_catalog_record(
+    expected_service: u32,
+    create_param_ptr: *mut *mut u8,
+) -> Option<VendorCatalogRecord> {
+    let create_param =
+        read_unaligned_at::<*const u8>(create_param_ptr.cast(), 0).unwrap_or(ptr::null());
+    if create_param.is_null() || !readable(create_param, 0x1C) {
+        return None;
+    }
+    let transaction_service = read_unaligned_at::<u32>(create_param.cast(), 0).unwrap_or_default();
+    if transaction_service != expected_service {
+        return None;
+    }
+    let (count_offset, entries_offset, stride) = if expected_service == 10 {
+        (0x10, 0x14, 8)
+    } else {
+        (0x14, 0x18, 4)
+    };
+    let entry_count =
+        read_unaligned_at::<u32>(create_param.cast(), count_offset).unwrap_or_default();
+    let captured = (entry_count as usize).min(MAX_VENDOR_ENTRIES);
+    let mut record = VendorCatalogRecord {
+        ts_ms: now_ms(),
+        session_id: capture_session_id(),
+        merchant_agent_id: LAST_VENDOR_AGENT_ID.load(Ordering::Acquire) as u32,
+        window_transaction_type: LAST_VENDOR_TRANSACTION_TYPE.load(Ordering::Acquire) as u32,
+        transaction_service,
+        entry_count,
+        captured_entry_count: captured as u16,
+        entries_truncated: entry_count as usize > captured,
+        ..VendorCatalogRecord::default()
+    };
+    if captured == 0 {
+        record.entries_readable = true;
+        return Some(record);
+    }
+    let entries =
+        read_unaligned_at::<*const u8>(create_param.cast(), entries_offset).unwrap_or(ptr::null());
+    if entries.is_null() || !readable(entries, captured * stride) {
+        return Some(record);
+    }
+    for index in 0..captured {
+        let entry = entries.add(index * stride);
+        record.entries[index].source_id =
+            read_unaligned_at::<u32>(entry.cast(), 0).unwrap_or_default();
+        if expected_service == 10 {
+            record.entries[index].aux =
+                read_unaligned_at::<u32>(entry.cast(), 4).unwrap_or_default();
+        }
+    }
+    record.entries_readable = true;
+    Some(record)
+}
+
+unsafe fn resolve_vendor_items(record: &mut VendorCatalogRecord) {
+    let item_data_by_id = ITEM_DATA_BY_ID.load(Ordering::Acquire);
+    if item_data_by_id == 0 || !record.entries_readable {
+        return;
+    }
+    let item_data_by_id: ItemDataByIdFn = std::mem::transmute(item_data_by_id);
+    for entry in &mut record.entries[..record.captured_entry_count as usize] {
+        let item_data = item_data_by_id(entry.source_id);
+        if item_data.is_null() || !readable(item_data, 0x14) {
+            continue;
+        }
+        entry.model_file_id = read_unaligned_at::<u32>(item_data.cast(), 0).unwrap_or_default();
+        entry.item_type = read_unaligned_at::<u8>(item_data.cast(), 4).unwrap_or_default() as u32;
+        entry.base_value = read_unaligned_at::<u32>(item_data.cast(), 8).unwrap_or_default();
+        entry.model_id = read_unaligned_at::<u32>(item_data.cast(), 0x10).unwrap_or_default();
+        entry.resolved = entry.model_id != 0;
+    }
+}
+
+unsafe fn resolve_vendor_npc_model(agent_id: u32) -> u32 {
+    let find_agent = MANAGER_FIND_AGENT.load(Ordering::Acquire);
+    if agent_id == 0 || find_agent == 0 {
+        return 0;
+    }
+    let find_agent: ManagerFindAgentFn = std::mem::transmute(find_agent);
+    let agent = find_agent(agent_id);
+    if agent.is_null() || !readable(agent, 0xF8) {
+        return 0;
+    }
+    if read_unaligned_at::<u32>(agent.cast(), 0x2C) != Some(agent_id)
+        || read_unaligned_at::<u32>(agent.cast(), 0x9C) != Some(0xDB)
+    {
+        return 0;
+    }
+    let composite = read_unaligned_at::<u32>(agent.cast(), 0xF4).unwrap_or_default();
+    if composite & 0xF000_0000 == 0x2000_0000 {
+        composite & 0x0FFF_FFFF
+    } else {
+        0
+    }
+}
+
+unsafe fn resolve_collector_rewards(record: &mut CollectorOfferRecord) {
+    let item_data_by_id = ITEM_DATA_BY_ID.load(Ordering::Acquire);
+    if item_data_by_id == 0 || !record.rewards_readable {
+        return;
+    }
+    let item_data_by_id: ItemDataByIdFn = std::mem::transmute(item_data_by_id);
+    for index in 0..record.captured_reward_count as usize {
+        let item_data = item_data_by_id(record.reward_item_ids[index]);
+        if item_data.is_null() || !readable(item_data, 0x14) {
+            continue;
+        }
+        record.reward_model_file_ids[index] =
+            read_unaligned_at::<u32>(item_data.cast(), 0).unwrap_or_default();
+        record.reward_item_types[index] =
+            read_unaligned_at::<u8>(item_data.cast(), 4).unwrap_or_default() as u32;
+        record.reward_model_ids[index] =
+            read_unaligned_at::<u32>(item_data.cast(), 0x10).unwrap_or_default();
+        record.reward_resolved[index] = record.reward_model_ids[index] != 0;
+    }
+}
+
 unsafe extern "C" fn item_general_handler(
     arg0: usize,
     packet: *mut u8,
@@ -56,30 +270,38 @@ unsafe extern "C" fn item_reuse_handler(
     result
 }
 
-macro_rules! quest_handler {
+macro_rules! world_handler {
     ($name:ident, $index:expr) => {
         unsafe extern "C" fn $name(arg0: usize, packet: *mut u8, arg2: usize, arg3: usize) -> bool {
-            record_quest_handler_packet($index, arg0, packet, arg2, arg3);
-            call_original_handler(&ORIGINAL_QUEST_HANDLERS[$index], arg0, packet, arg2, arg3)
+            let quest_id = record_world_handler_packet($index, arg0, packet, arg2, arg3);
+            let result =
+                call_original_handler(&ORIGINAL_WORLD_HANDLERS[$index], arg0, packet, arg2, arg3);
+            if let Some(quest_id) = quest_id {
+                request_quest_info_once(quest_id);
+            }
+            result
         }
     };
 }
 
-quest_handler!(agent_spawned_handler, 0);
-quest_handler!(agent_despawned_handler, 1);
-quest_handler!(quest_add_handler, 2);
-quest_handler!(quest_description_handler, 3);
-quest_handler!(quest_general_info_handler, 4);
-quest_handler!(quest_update_marker_handler, 5);
-quest_handler!(quest_remove_handler, 6);
-quest_handler!(quest_add_marker_handler, 7);
-quest_handler!(quest_update_objectives_handler, 8);
-quest_handler!(npc_update_properties_handler, 9);
-quest_handler!(dialog_button_handler, 10);
-quest_handler!(dialog_sender_handler, 11);
-quest_handler!(instance_load_info_handler, 12);
+world_handler!(agent_spawned_handler, 0);
+world_handler!(agent_despawned_handler, 1);
+world_handler!(quest_add_handler, 2);
+world_handler!(quest_description_handler, 3);
+world_handler!(quest_general_info_handler, 4);
+world_handler!(quest_update_marker_handler, 5);
+world_handler!(quest_remove_handler, 6);
+world_handler!(quest_add_marker_handler, 7);
+world_handler!(quest_update_objectives_handler, 8);
+world_handler!(npc_update_properties_handler, 9);
+world_handler!(dialog_button_handler, 10);
+world_handler!(dialog_sender_handler, 11);
+world_handler!(agent_name_handler, 12);
+world_handler!(merchant_window_handler, 13);
+world_handler!(window_owner_handler, 14);
+world_handler!(instance_load_info_handler, 15);
 
-const QUEST_REPLACEMENT_HANDLERS: [StoCHandlerFn; QUEST_PACKET_HEADERS.len()] = [
+const WORLD_REPLACEMENT_HANDLERS: [StoCHandlerFn; WORLD_PACKET_HEADERS.len()] = [
     agent_spawned_handler,
     agent_despawned_handler,
     quest_add_handler,
@@ -92,18 +314,21 @@ const QUEST_REPLACEMENT_HANDLERS: [StoCHandlerFn; QUEST_PACKET_HEADERS.len()] = 
     npc_update_properties_handler,
     dialog_button_handler,
     dialog_sender_handler,
+    agent_name_handler,
+    merchant_window_handler,
+    window_owner_handler,
     instance_load_info_handler,
 ];
 
-unsafe fn record_quest_handler_packet(
+unsafe fn record_world_handler_packet(
     index: usize,
     arg0: usize,
     packet: *mut u8,
     arg2: usize,
     arg3: usize,
-) {
-    let expected_header = QUEST_PACKET_HEADERS[index] as u32;
-    let expected_len = quest_packet_size(expected_header);
+) -> Option<u32> {
+    let expected_header = WORLD_PACKET_HEADERS[index] as u32;
+    let expected_len = world_packet_size(expected_header);
     for candidate in [
         packet.cast_const(),
         arg0 as *const u8,
@@ -117,23 +342,75 @@ unsafe fn record_quest_handler_packet(
             continue;
         }
         let bytes = std::slice::from_raw_parts(packet, expected_len);
-        if !valid_quest_capture_packet(expected_header, bytes) {
+        if !valid_world_capture_packet(expected_header, bytes) {
             continue;
         }
-        let mut record = QuestPacketRecord {
+        if let Some(context) = decode_collector_window_context(expected_header, bytes) {
+            match context {
+                CollectorWindowContext::TransactionType(value) => {
+                    LAST_VENDOR_TRANSACTION_TYPE.store(value as usize, Ordering::Release);
+                }
+                CollectorWindowContext::AgentId(value) => {
+                    LAST_VENDOR_AGENT_ID.store(value as usize, Ordering::Release);
+                }
+            }
+        }
+        let mut record = WorldPacketRecord {
             ts_ms: now_ms(),
             session_id: capture_session_id(),
+            capture_seq: next_capture_seq(),
             header: expected_header,
             len: expected_len as u16,
-            data: [0; MAX_QUEST_PACKET_BYTES],
+            data: [0; MAX_WORLD_PACKET_BYTES],
         };
         record.data[..expected_len].copy_from_slice(bytes);
-        push_quest_packet(record);
+        push_world_packet(record);
+        return quest_id_for_request(expected_header, bytes);
+    }
+    None
+}
+
+fn quest_id_for_request(header: u32, bytes: &[u8]) -> Option<u32> {
+    if !matches!(header, 0x49 | 0x50 | 0x51 | 0x53 | 0x54) {
+        return None;
+    }
+    Some(u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?))
+}
+
+unsafe fn request_quest_info_once(quest_id: u32) {
+    let request = REQUEST_QUEST_INFO.load(Ordering::Acquire);
+    if request == 0 {
         return;
+    }
+    let first_request = REQUESTED_QUEST_IDS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(quest_id);
+    if first_request {
+        let request: RequestQuestInfoFn = std::mem::transmute(request);
+        request(quest_id);
     }
 }
 
-fn quest_packet_size(header: u32) -> usize {
+#[derive(Debug, PartialEq, Eq)]
+enum CollectorWindowContext {
+    TransactionType(u32),
+    AgentId(u32),
+}
+
+fn decode_collector_window_context(header: u32, bytes: &[u8]) -> Option<CollectorWindowContext> {
+    let value = bytes
+        .get(4..8)
+        .and_then(|raw| raw.try_into().ok())
+        .map(u32::from_le_bytes)?;
+    match header {
+        0xc3 => Some(CollectorWindowContext::TransactionType(value)),
+        0xc4 => Some(CollectorWindowContext::AgentId(value)),
+        _ => None,
+    }
+}
+
+fn world_packet_size(header: u32) -> usize {
     match header {
         0x20 => 0x74,
         0x21 => 8,
@@ -146,12 +423,15 @@ fn quest_packet_size(header: u32) -> usize {
         0x56 => 0x34,
         0x7e => 0x110,
         0x81 => 8,
+        0x9b => 0x48,
+        0xc3 => 0x0c,
+        0xc4 => 8,
         0x199 => 0x1c,
         _ => 0,
     }
 }
 
-fn fixed_schema_packet_size(schema: &QuestPacketSchemaRecord) -> Option<usize> {
+fn fixed_schema_packet_size(schema: &WorldPacketSchemaRecord) -> Option<usize> {
     let field_count = schema.field_count as usize;
     if field_count == 0 || field_count > schema.fields.len() {
         return None;
@@ -170,7 +450,7 @@ fn fixed_schema_packet_size(schema: &QuestPacketSchemaRecord) -> Option<usize> {
         })
 }
 
-fn valid_quest_capture_packet(header: u32, bytes: &[u8]) -> bool {
+fn valid_world_capture_packet(header: u32, bytes: &[u8]) -> bool {
     let u32_at = |offset| {
         bytes
             .get(offset..offset + 4)
@@ -182,7 +462,7 @@ fn valid_quest_capture_packet(header: u32, bytes: &[u8]) -> bool {
             u32_at(4).is_some_and(|agent_id| agent_id != 0)
                 && u32_at(8).is_some_and(|agent_type| agent_type & 0xf000_0000 == 0x2000_0000)
         }
-        0x21 | 0x81 => u32_at(4).is_some_and(|agent_id| agent_id != 0),
+        0x21 | 0x81 | 0x9b => u32_at(4).is_some_and(|agent_id| agent_id != 0),
         0x49 | 0x4c | 0x50 | 0x51 | 0x52 | 0x53 | 0x54 => {
             u32_at(4).is_some_and(|quest_id| (1..=u32::from(u16::MAX)).contains(&quest_id))
         }
@@ -192,6 +472,8 @@ fn valid_quest_capture_packet(header: u32, bytes: &[u8]) -> bool {
                 && (1..=u32::from(u16::MAX)).contains(&((dialog_id ^ 0x0080_0000) >> 8))
                 && matches!(dialog_id & 0xf, 1..=7)
         }),
+        0xc3 => u32_at(4).is_some_and(|transaction_type| transaction_type < 0x100),
+        0xc4 => u32_at(4).is_some_and(|agent_id| agent_id != 0),
         0x199 => u32_at(8).is_some_and(|map_id| map_id != 0),
         _ => false,
     }
@@ -245,8 +527,60 @@ unsafe fn record_item_packet(
         data: [0; MAX_PACKET_BYTES],
     };
     ptr::copy_nonoverlapping(packet, record.data.as_mut_ptr(), len);
-
     push_bounded(&RING, record);
+    if matches!(
+        header as usize,
+        GAME_SMSG_ITEM_GENERAL_INFO | GAME_SMSG_ITEM_REUSE_ID
+    ) {
+        if let Some(item_id) = read_unaligned_at::<u32>(packet.cast(), 4) {
+            capture_runtime_item_strings(item_id);
+        }
+    }
+}
+
+unsafe fn capture_runtime_item_strings(item_id: u32) {
+    let item_data_by_id = ITEM_DATA_BY_ID.load(Ordering::Acquire);
+    if item_data_by_id == 0 {
+        return;
+    }
+    let item_data_by_id: ItemDataByIdFn = std::mem::transmute(item_data_by_id);
+    let item_data = item_data_by_id(item_id);
+    if item_data.is_null() || !readable(item_data, 0x20) {
+        return;
+    }
+
+    let mut record = RuntimeItemStringsRecord::new(item_id);
+    record.model_file_id =
+        read_unaligned_at::<u32>(item_data.cast(), 0).unwrap_or_default() & 0x7fff_ffff;
+    record.model_id = read_unaligned_at::<u32>(item_data.cast(), 0x10).unwrap_or_default();
+    let desc = read_unaligned_at::<*const u16>(item_data.cast(), 0x14).unwrap_or(ptr::null());
+    (record.desc_len, record.desc_complete, record.desc_truncated) =
+        capture_utf16_z(desc, &mut record.desc);
+    let complete_name =
+        read_unaligned_at::<*const u16>(item_data.cast(), 0x1c).unwrap_or(ptr::null());
+    (
+        record.complete_name_len,
+        record.complete_name_complete,
+        record.complete_name_truncated,
+    ) = capture_utf16_z(complete_name, &mut record.complete_name);
+    push_bounded(&RUNTIME_ITEM_STRING_RING, record);
+}
+
+unsafe fn capture_utf16_z(source: *const u16, destination: &mut [u16]) -> (u16, bool, bool) {
+    let readable_words =
+        readable_prefix(source.cast(), std::mem::size_of_val(destination)) / size_of::<u16>();
+    if readable_words == 0 {
+        return (0, false, false);
+    }
+    let source = std::slice::from_raw_parts(source, readable_words);
+    let nul = source.iter().position(|word| *word == 0);
+    let captured = nul.map_or(readable_words, |index| index + 1);
+    destination[..captured].copy_from_slice(&source[..captured]);
+    (
+        captured as u16,
+        nul.is_some(),
+        nul.is_none() && readable_words == destination.len(),
+    )
 }
 
 unsafe fn call_original_handler(
@@ -505,6 +839,7 @@ pub(super) unsafe fn install_stoc_handler_hooks() -> Result<usize, &'static str>
     {
         return Err("stoc_handler_array_not_ready");
     }
+    let item_data_by_id = item_data_by_id_address()?;
 
     let item_general = handlers.buffer.add(GAME_SMSG_ITEM_GENERAL_INFO);
     let item_reuse = handlers.buffer.add(GAME_SMSG_ITEM_REUSE_ID);
@@ -515,43 +850,44 @@ pub(super) unsafe fn install_stoc_handler_hooks() -> Result<usize, &'static str>
 
     ORIGINAL_ITEM_GENERAL.store(item_general_original, Ordering::Release);
     ORIGINAL_ITEM_REUSE.store(item_reuse_original, Ordering::Release);
+    ITEM_DATA_BY_ID.store(item_data_by_id, Ordering::Release);
     (*item_general).handler_func = item_general_replacement;
     (*item_reuse).handler_func = item_reuse_replacement;
 
     Ok(handlers.buffer as usize)
 }
 
-pub(super) unsafe fn install_quest_handler_hooks(
-) -> Result<(usize, [QuestPacketSchemaRecord; QUEST_PACKET_HEADERS.len()]), &'static str> {
+pub(super) unsafe fn install_world_handler_hooks(
+) -> Result<(usize, [WorldPacketSchemaRecord; WORLD_PACKET_HEADERS.len()]), &'static str> {
     let handlers = &mut *stoc_handler_array()?;
-    let required_handlers = QUEST_PACKET_HEADERS[QUEST_PACKET_HEADERS.len() - 1] + 1;
+    let required_handlers = WORLD_PACKET_HEADERS[WORLD_PACKET_HEADERS.len() - 1] + 1;
     if handlers.buffer.is_null()
         || (handlers.size as usize) < required_handlers
         || (handlers.capacity as usize) < required_handlers
     {
-        return Err("quest_handler_array_not_ready");
+        return Err("world_handler_array_not_ready");
     }
 
-    let mut originals = [0_usize; QUEST_PACKET_HEADERS.len()];
-    let mut schemas = [QuestPacketSchemaRecord {
+    let mut originals = [0_usize; WORLD_PACKET_HEADERS.len()];
+    let mut schemas = [WorldPacketSchemaRecord {
         header: 0,
         field_count: 0,
-        fields: [0; MAX_QUEST_SCHEMA_FIELDS],
-    }; QUEST_PACKET_HEADERS.len()];
-    for (index, &header) in QUEST_PACKET_HEADERS.iter().enumerate() {
+        fields: [0; MAX_WORLD_SCHEMA_FIELDS],
+    }; WORLD_PACKET_HEADERS.len()];
+    for (index, &header) in WORLD_PACKET_HEADERS.iter().enumerate() {
         let handler = handlers.buffer.add(header);
-        let replacement = QUEST_REPLACEMENT_HANDLERS[index] as *const () as usize;
+        let replacement = WORLD_REPLACEMENT_HANDLERS[index] as *const () as usize;
         originals[index] = handler_original(handler, replacement)?;
         let field_count = (*handler).field_count as usize;
         if field_count == 0
-            || field_count > MAX_QUEST_SCHEMA_FIELDS
+            || field_count > MAX_WORLD_SCHEMA_FIELDS
             || (*handler).fields.is_null()
             || !readable(
                 (*handler).fields.cast::<u8>(),
                 field_count * size_of::<u32>(),
             )
         {
-            return Err("quest_handler_schema_not_ready");
+            return Err("world_handler_schema_not_ready");
         }
         schemas[index].header = header as u32;
         schemas[index].field_count = field_count as u16;
@@ -560,18 +896,170 @@ pub(super) unsafe fn install_quest_handler_hooks(
             schemas[index].fields.as_mut_ptr(),
             field_count,
         );
-        if fixed_schema_packet_size(&schemas[index]) != Some(quest_packet_size(header as u32)) {
-            return Err("quest_handler_schema_changed");
+        if fixed_schema_packet_size(&schemas[index]) != Some(world_packet_size(header as u32)) {
+            return Err("world_handler_schema_changed");
         }
     }
 
-    for (index, &header) in QUEST_PACKET_HEADERS.iter().enumerate() {
+    for (index, &header) in WORLD_PACKET_HEADERS.iter().enumerate() {
         let handler = handlers.buffer.add(header);
-        ORIGINAL_QUEST_HANDLERS[index].store(originals[index], Ordering::Release);
-        (*handler).handler_func = QUEST_REPLACEMENT_HANDLERS[index] as *const () as usize;
+        ORIGINAL_WORLD_HANDLERS[index].store(originals[index], Ordering::Release);
+        (*handler).handler_func = WORLD_REPLACEMENT_HANDLERS[index] as *const () as usize;
     }
 
     Ok((handlers.buffer as usize, schemas))
+}
+
+pub(super) unsafe fn install_vendor_hooks() -> Result<usize, &'static str> {
+    let base = GetModuleHandleA(ptr::null());
+    if base.is_null() {
+        return Err("module_base_not_found");
+    }
+    let (text_start, text_len) = pe_text_section(base as usize).ok_or("text_section_not_found")?;
+
+    let collector_anchor = find_pattern(text_start, text_len, COLLECTOR_CREATE_ANCHOR)
+        .ok_or("collector_create_pattern_not_found")?;
+    let collector_create = collector_anchor
+        .checked_sub(COLLECTOR_CREATE_ANCHOR_OFFSET)
+        .ok_or("collector_create_address_invalid")?;
+    if std::slice::from_raw_parts(collector_create as *const u8, COLLECTOR_CREATE_HOOK_LEN)
+        != b"\x55\x8B\xEC\x83\xEC\x1C"
+    {
+        return Err("collector_create_prologue_unexpected");
+    }
+
+    let merchant_anchor = find_pattern(text_start, text_len, MERCHANT_CREATE_ANCHOR)
+        .ok_or("merchant_create_pattern_not_found")?;
+    let merchant_create = merchant_anchor
+        .checked_sub(VENDOR_CREATE_ANCHOR_OFFSET)
+        .ok_or("merchant_create_address_invalid")?;
+    if std::slice::from_raw_parts(merchant_create as *const u8, VENDOR_CREATE_HOOK_LEN)
+        != b"\x55\x8B\xEC\x83\xEC\x0C"
+    {
+        return Err("merchant_create_prologue_unexpected");
+    }
+
+    let crafter_anchor = find_pattern(text_start, text_len, CRAFTER_CREATE_ANCHOR)
+        .ok_or("crafter_create_pattern_not_found")?;
+    let crafter_create = crafter_anchor
+        .checked_sub(VENDOR_CREATE_ANCHOR_OFFSET)
+        .ok_or("crafter_create_address_invalid")?;
+    if std::slice::from_raw_parts(crafter_create as *const u8, VENDOR_CREATE_HOOK_LEN)
+        != b"\x55\x8B\xEC\x83\xEC\x0C"
+    {
+        return Err("crafter_create_prologue_unexpected");
+    }
+
+    let trainer_anchor = find_pattern(text_start, text_len, TRAINER_CREATE_ANCHOR)
+        .ok_or("trainer_create_pattern_not_found")?;
+    let trainer_create = trainer_anchor
+        .checked_sub(VENDOR_CREATE_ANCHOR_OFFSET)
+        .ok_or("trainer_create_address_invalid")?;
+    if std::slice::from_raw_parts(trainer_create as *const u8, VENDOR_CREATE_HOOK_LEN)
+        != b"\x55\x8B\xEC\x83\xEC\x10"
+    {
+        return Err("trainer_create_prologue_unexpected");
+    }
+
+    let manager_anchor = find_pattern(text_start, text_len, MANAGER_FIND_AGENT_ANCHOR)
+        .ok_or("vendor_manager_find_agent_pattern_not_found")?;
+    let manager_find_agent = manager_anchor
+        .checked_sub(MANAGER_FIND_AGENT_ANCHOR_OFFSET)
+        .ok_or("vendor_manager_find_agent_address_invalid")?;
+    if std::slice::from_raw_parts(manager_find_agent as *const u8, 6) != b"\x55\x8B\xEC\x8B\x4D\x08"
+    {
+        return Err("vendor_manager_find_agent_prologue_unexpected");
+    }
+
+    let item_data_by_id = match ITEM_DATA_BY_ID.load(Ordering::Acquire) {
+        0 => item_data_by_id_address()?,
+        address => address,
+    };
+
+    let collector_trampoline =
+        build_function_trampoline(collector_create, COLLECTOR_CREATE_HOOK_LEN)?;
+    let merchant_trampoline = build_function_trampoline(merchant_create, VENDOR_CREATE_HOOK_LEN)?;
+    let crafter_trampoline = build_function_trampoline(crafter_create, VENDOR_CREATE_HOOK_LEN)?;
+    let trainer_trampoline = build_function_trampoline(trainer_create, VENDOR_CREATE_HOOK_LEN)?;
+    ORIGINAL_COLLECTOR_CREATE.store(collector_trampoline, Ordering::Release);
+    ORIGINAL_MERCHANT_CREATE.store(merchant_trampoline, Ordering::Release);
+    ORIGINAL_CRAFTER_CREATE.store(crafter_trampoline, Ordering::Release);
+    ORIGINAL_TRAINER_CREATE.store(trainer_trampoline, Ordering::Release);
+    MANAGER_FIND_AGENT.store(manager_find_agent, Ordering::Release);
+    ITEM_DATA_BY_ID.store(item_data_by_id, Ordering::Release);
+
+    write_jmp_len(
+        collector_create,
+        collector_create_hook as *const () as usize,
+        COLLECTOR_CREATE_HOOK_LEN,
+    )?;
+    write_jmp_len(
+        merchant_create,
+        merchant_create_hook as *const () as usize,
+        VENDOR_CREATE_HOOK_LEN,
+    )?;
+    write_jmp_len(
+        crafter_create,
+        crafter_create_hook as *const () as usize,
+        VENDOR_CREATE_HOOK_LEN,
+    )?;
+    write_jmp_len(
+        trainer_create,
+        trainer_create_hook as *const () as usize,
+        VENDOR_CREATE_HOOK_LEN,
+    )?;
+    Ok(collector_create)
+}
+
+unsafe fn item_data_by_id_address() -> Result<usize, &'static str> {
+    let base = GetModuleHandleA(ptr::null());
+    if base.is_null() {
+        return Err("module_base_not_found");
+    }
+    let (text_start, text_len) = pe_text_section(base as usize).ok_or("text_section_not_found")?;
+    let item_anchor = find_pattern(text_start, text_len, ITEM_DATA_BY_ID_ANCHOR)
+        .ok_or("item_data_pattern_not_found")?;
+    let item_data_by_id = item_anchor
+        .checked_sub(ITEM_DATA_BY_ID_ANCHOR_OFFSET)
+        .ok_or("item_data_address_invalid")?;
+    if std::slice::from_raw_parts(item_data_by_id as *const u8, 4) != b"\x55\x8B\xEC\x56" {
+        return Err("item_data_prologue_unexpected");
+    }
+    Ok(item_data_by_id)
+}
+
+pub(super) unsafe fn install_quest_info_request() -> Result<usize, &'static str> {
+    let base = GetModuleHandleA(ptr::null()) as usize;
+    if base == 0 {
+        return Err("module_base_not_found");
+    }
+    let (text_start, text_len) = pe_text_section(base).ok_or("text_section_not_found")?;
+    let (rdata_start, rdata_len) = pe_section(base, b".rdata").ok_or("rdata_section_not_found")?;
+    let assertion = find_pattern(rdata_start, rdata_len, QUEST_INFO_ASSERTION)
+        .ok_or("quest_info_assertion_not_found")?;
+    let assertion = u32::try_from(assertion)
+        .map_err(|_| "quest_info_assertion_address_invalid")?
+        .to_le_bytes();
+    let text = std::slice::from_raw_parts(text_start as *const u8, text_len);
+    let mut xrefs = text
+        .windows(assertion.len())
+        .enumerate()
+        .filter(|(_, bytes)| *bytes == assertion)
+        .map(|(offset, _)| text_start + offset);
+    xrefs.next().ok_or("quest_info_marker_request_not_found")?;
+    let request_xref = xrefs.next().ok_or("quest_info_request_not_found")?;
+    if xrefs.next().is_some() {
+        return Err("quest_info_request_ambiguous");
+    }
+    let search_start = request_xref.saturating_sub(0x80).max(text_start);
+    let search = std::slice::from_raw_parts(search_start as *const u8, request_xref - search_start);
+    let offset = search
+        .windows(4)
+        .rposition(|bytes| bytes == b"\x55\x8B\xEC\x51")
+        .ok_or("quest_info_request_prologue_not_found")?;
+    let request = search_start + offset;
+    REQUEST_QUEST_INFO.store(request, Ordering::Release);
+    Ok(request)
 }
 
 pub(super) unsafe fn install_text_decode_id_hook() -> Result<usize, &'static str> {
@@ -876,6 +1364,10 @@ pub(super) unsafe fn client_pe_timestamp() -> Option<u32> {
 }
 
 unsafe fn pe_text_section(base: usize) -> Option<(usize, usize)> {
+    pe_section(base, b".text")
+}
+
+unsafe fn pe_section(base: usize, expected_name: &[u8]) -> Option<(usize, usize)> {
     if read_u16(base, 0)? != 0x5A4D {
         return None;
     }
@@ -897,7 +1389,7 @@ unsafe fn pe_text_section(base: usize) -> Option<(usize, usize)> {
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(name.len());
-        if &name[..nul] != b".text" {
+        if &name[..nul] != expected_name {
             continue;
         }
         let virtual_size = read_u32(base, section.checked_add(8)?)? as usize;
@@ -993,22 +1485,22 @@ mod tests {
     }
 
     #[test]
-    fn client_schema_matches_static_quest_packet_size() {
+    fn client_schema_matches_static_world_packet_size() {
         let scalar = 4 | (4 << 8);
         let string8 = 7 | (8 << 8);
-        let mut schema = QuestPacketSchemaRecord {
+        let mut schema = WorldPacketSchemaRecord {
             header: 0x49,
             field_count: 10,
-            fields: [0; MAX_QUEST_SCHEMA_FIELDS],
+            fields: [0; MAX_WORLD_SCHEMA_FIELDS],
         };
         schema.fields[..10].copy_from_slice(&[
             scalar, scalar, 2, scalar, scalar, scalar, string8, string8, string8, scalar,
         ]);
         assert_eq!(fixed_schema_packet_size(&schema), Some(0x50));
-        assert_eq!(quest_packet_size(schema.header), 0x50);
-        assert!(QUEST_PACKET_HEADERS.iter().all(
-            |header| (1..=MAX_QUEST_PACKET_BYTES).contains(&quest_packet_size(*header as u32))
-        ));
+        assert_eq!(world_packet_size(schema.header), 0x50);
+        assert!(WORLD_PACKET_HEADERS.iter().all(|header| {
+            (1..=MAX_WORLD_PACKET_BYTES).contains(&world_packet_size(*header as u32))
+        }));
 
         schema.field_count = 3;
         schema.fields[..3].copy_from_slice(&[scalar, 12, scalar]);
@@ -1016,8 +1508,91 @@ mod tests {
         let mut captured = [0_u8; 8];
         captured[..4].copy_from_slice(&0x54_u32.to_le_bytes());
         captured[4..].copy_from_slice(&0x389_u32.to_le_bytes());
-        assert!(valid_quest_capture_packet(0x54, &captured));
+        assert!(valid_world_capture_packet(0x54, &captured));
         captured[4..].copy_from_slice(&0x532c_c66c_u32.to_le_bytes());
-        assert!(!valid_quest_capture_packet(0x54, &captured));
+        assert!(!valid_world_capture_packet(0x54, &captured));
+    }
+    #[test]
+    fn collector_create_uses_count_needed_not_create_param_pointer() {
+        let _ = drain_collector_offer_records();
+        ORIGINAL_COLLECTOR_CREATE.store(0, Ordering::Release);
+        MANAGER_FIND_AGENT.store(0, Ordering::Release);
+        ITEM_DATA_BY_ID.store(0, Ordering::Release);
+
+        let reward_item_ids = [900_u32];
+        let mut create_param = [0_u8; 0x24];
+        create_param[0..4].copy_from_slice(&2_u32.to_le_bytes());
+        create_param[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes());
+        create_param[0x18..0x1c]
+            .copy_from_slice(&(reward_item_ids.as_ptr() as usize).to_le_bytes());
+        create_param[0x1c..0x20].copy_from_slice(&99_u32.to_le_bytes());
+        create_param[0x20..0x24].copy_from_slice(&77_u32.to_le_bytes());
+
+        let mut collector = [0_u8; 0x14];
+        collector[0x0c..0x10].copy_from_slice(&4_u32.to_le_bytes());
+        collector[0x10..0x14].copy_from_slice(&948_u32.to_le_bytes());
+        let mut create_param_ptr = create_param.as_mut_ptr();
+        unsafe { collector_create_hook(collector.as_mut_ptr(), &mut create_param_ptr) };
+
+        let rows = drain_collector_offer_records();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].trophy_item_id, 77);
+        assert_eq!(rows[0].required_item_quantity, 4);
+        assert_eq!(rows[0].required_item_model_id, 948);
+        assert_eq!(rows[0].reward_item_ids[0], 900);
+    }
+
+    #[test]
+    fn vendor_create_reads_item_and_skill_catalogs() {
+        let _ = drain_vendor_catalog_records();
+        ORIGINAL_MERCHANT_CREATE.store(0, Ordering::Release);
+        ORIGINAL_TRAINER_CREATE.store(0, Ordering::Release);
+        ITEM_DATA_BY_ID.store(0, Ordering::Release);
+
+        let item_ids = [101_u32, 102];
+        let mut merchant_param = [0_u8; 0x1c];
+        merchant_param[..4].copy_from_slice(&1_u32.to_le_bytes());
+        merchant_param[0x14..0x18].copy_from_slice(&2_u32.to_le_bytes());
+        merchant_param[0x18..0x1c].copy_from_slice(&(item_ids.as_ptr() as usize).to_le_bytes());
+        let mut merchant_param_ptr = merchant_param.as_mut_ptr();
+        unsafe { merchant_create_hook(ptr::null_mut(), &mut merchant_param_ptr) };
+
+        let skills = [900_u32, 1, 901, 0];
+        let mut trainer_param = [0_u8; 0x1c];
+        trainer_param[..4].copy_from_slice(&10_u32.to_le_bytes());
+        trainer_param[0x10..0x14].copy_from_slice(&2_u32.to_le_bytes());
+        trainer_param[0x14..0x18].copy_from_slice(&(skills.as_ptr() as usize).to_le_bytes());
+        let mut trainer_param_ptr = trainer_param.as_mut_ptr();
+        unsafe { trainer_create_hook(ptr::null_mut(), &mut trainer_param_ptr) };
+
+        let rows = drain_vendor_catalog_records();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].transaction_service, 1);
+        assert_eq!(rows[0].entries[1].source_id, 102);
+        assert!(rows[0].entries_readable);
+        assert_eq!(rows[1].transaction_service, 10);
+        assert_eq!(rows[1].entries[0].source_id, 900);
+        assert_eq!(rows[1].entries[0].aux, 1);
+    }
+
+    #[test]
+    fn merchant_packets_supply_collector_identity() {
+        let mut merchant_window = [0_u8; 12];
+        merchant_window[..4].copy_from_slice(&0xc3_u32.to_le_bytes());
+        merchant_window[4..8].copy_from_slice(&2_u32.to_le_bytes());
+        assert!(valid_world_capture_packet(0xc3, &merchant_window));
+        assert_eq!(
+            decode_collector_window_context(0xc3, &merchant_window),
+            Some(CollectorWindowContext::TransactionType(2))
+        );
+
+        let mut window_owner = [0_u8; 8];
+        window_owner[..4].copy_from_slice(&0xc4_u32.to_le_bytes());
+        window_owner[4..].copy_from_slice(&267_u32.to_le_bytes());
+        assert!(valid_world_capture_packet(0xc4, &window_owner));
+        assert_eq!(
+            decode_collector_window_context(0xc4, &window_owner),
+            Some(CollectorWindowContext::AgentId(267))
+        );
     }
 }

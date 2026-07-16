@@ -1,0 +1,19 @@
+{
+  "name": "tyria-extractor-tools",
+  "private": true,
+  "scripts": {
+    "build": "cargo build --release -p tyria-extractor-rs",
+    "build:capture": "cargo build --release --target i686-pc-windows-msvc -p tyria_sniffer -p tyria_injector",
+    "inject": "target/i686-pc-windows-msvc/release/tyria_injector.exe Gw.exe target/i686-pc-windows-msvc/release/tyria_sniffer.dll",
+    "extract": "bun tools/extract.ts",
+    "extract:all": "bun tools/extract.ts all",
+    "extract:skills": "bun tools/extract.ts skills",
+    "extract:images": "bun tools/extract.ts images",
+    "extract:items": "bun tools/extract.ts items",
+    "extract:quests": "bun tools/extract.ts quests",
+    "extract:npcs": "bun tools/extract.ts npcs",
+    "extract:vendors": "bun tools/extract.ts vendors",
+    "validate:items": "python tools/validate_items_catalog.py output/items/items.json --require-complete",
+    "regen": "bun run extract:all && bun run validate:items"
+  }
+}

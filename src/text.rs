@@ -203,16 +203,7 @@ pub(crate) fn detect_entry_kind(bytes: &[u8]) -> &'static str {
 }
 
 pub(crate) fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
-    if !hex.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(hex.len() / 2);
-    for pair in hex.as_bytes().chunks_exact(2) {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out.push(((hi << 4) | lo) as u8);
-    }
-    Some(out)
+    hex::decode(hex).ok()
 }
 
 pub(crate) fn encoded_words_from_hex(hex: &str) -> Option<Vec<u16>> {
@@ -346,6 +337,79 @@ pub(crate) fn apply_encoded_template(template: &str, args: &[String]) -> String 
     }
     out.push_str(&template[cursor..]);
     out
+}
+
+pub(crate) fn for_each_localized_reference(
+    refs: &[TextReference],
+    lookup: &catalog::LocalizedTextCatalog,
+    mut visit: impl FnMut(&str, &str),
+) {
+    let Some(template) = refs.first() else {
+        return;
+    };
+    let Some(template_names) = lookup.by_text_id.get(&template.id) else {
+        return;
+    };
+    for (code, template_text) in template_names {
+        let args = refs[1..]
+            .iter()
+            .map(|text_ref| {
+                lookup
+                    .by_text_id
+                    .get(&text_ref.id)
+                    .and_then(|texts| texts.get(code).or_else(|| texts.get("en")))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let text = apply_encoded_template(template_text, &args)
+            .replace("{sc}", "")
+            .replace("{s}", "");
+        let text = text.trim_matches('%').trim();
+        if !text.is_empty() {
+            visit(code, text);
+        }
+    }
+}
+
+pub(crate) fn clean_display_text(text: &str) -> String {
+    let mut text = text
+        .replace("[lbracket]", "\u{e000}")
+        .replace("[rbracket]", "\u{e001}");
+    for tag in ["[proper]", "[F]", "[M]", "[N]", "[PF]", "[PM]", "[U]"] {
+        text = text.replace(tag, "");
+    }
+    while let Some(start) = text.find('[') {
+        if let Some(end) = text[start..].find(']') {
+            text.replace_range(start..=start + end, "");
+        } else {
+            break;
+        }
+    }
+    while let Some(start) = text.find('<') {
+        if let Some(end) = text[start..].find('>') {
+            text.replace_range(start..=start + end, "");
+        } else {
+            break;
+        }
+    }
+    let text = text.replace('\u{e000}', "[").replace('\u{e001}', "]");
+    let mut result = String::new();
+    let mut in_space = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !in_space {
+                result.push(' ');
+                in_space = true;
+            }
+        } else {
+            result.push(ch);
+            in_space = false;
+        }
+    }
+    result
+        .trim_matches(|ch: char| ch.is_whitespace() || ch == '\0')
+        .to_string()
 }
 
 #[cfg(test)]
