@@ -1,6 +1,8 @@
 /target
 /data
 /references
+/output
+/captures
 Gw.dat
 
 # Python bytecode
